@@ -108,6 +108,10 @@
             <input type="radio" name="provider" value="claude" />
             <span>Claude Code</span>
           </label>
+          <label>
+            <input type="radio" name="provider" value="openrouter" />
+            <span>OpenRouter</span>
+          </label>
         </div>
 
         <label class="field">
@@ -125,6 +129,18 @@
           <span class="field-label">CLAUDE config home</span>
           <input id="claudeHome" placeholder="~/.claude" />
           <span class="field-hint">Defaults to <code>~/.claude</code> if left blank.</span>
+        </label>
+
+        <label class="field" id="openrouterKeyEnvField" hidden>
+          <span class="field-label">API key env var</span>
+          <input id="openrouterKeyEnv" placeholder="OPENROUTER_API_KEY" />
+          <span class="field-hint">Name of the environment variable holding your OpenRouter API key. The key must start with <code>sk-or-</code> and be stored in an env var (not entered directly).</span>
+        </label>
+
+        <label class="field" id="openrouterUsageLogField" hidden>
+          <span class="field-label">Usage log <em>optional</em></span>
+          <input id="openrouterUsageLog" placeholder="~/openrouter-usage.jsonl" />
+          <span class="field-hint">Local JSON or JSONL generation metadata. Keep prompts out; model, token, cost, and timestamp fields are enough.</span>
         </label>
 
         <label class="field">

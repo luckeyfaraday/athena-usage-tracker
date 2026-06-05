@@ -33,6 +33,7 @@ Built for developers who rotate between several **ChatGPT Plus / Pro / Team** Co
 - [Codex Account Setup](#codex-account-setup)
 - [Claude Code Setup](#claude-code-setup)
 - [Account Configuration](#account-configuration)
+- [Local Environment](#local-environment)
 - [Local API](#local-api)
 - [Data and Privacy](#data-and-privacy)
 - [Project Structure](#project-structure)
@@ -367,6 +368,47 @@ Example:
   ]
 }
 ```
+
+## Local Environment
+
+The server automatically loads these private env files on startup:
+
+- `~/.config/athena-usage-tracker/env`
+- `.env`
+- `.env.local`
+
+Shell environment variables still take priority, so command-line overrides like `PORT=8092 npm start` keep working. The user-level file is useful when you have multiple git worktrees because every worktree reads the same secrets.
+
+For a single worktree, copy the example and fill in local secrets:
+
+```bash
+cp .env.example .env
+```
+
+For all worktrees, create the shared file instead:
+
+```bash
+mkdir -p ~/.config/athena-usage-tracker
+cp .env.example ~/.config/athena-usage-tracker/env
+```
+
+For OpenRouter accounts, store the API key in `.env` and reference only the variable name in the account config:
+
+```bash
+OPENROUTER_API_KEY_PERSONAL=sk-or-...
+```
+
+`data/accounts.json` should contain the env var name, not the key:
+
+```json
+{
+  "name": "OpenRouter",
+  "provider": "openrouter",
+  "openrouterKeyEnv": "OPENROUTER_API_KEY_PERSONAL"
+}
+```
+
+`.env` and `.env.local` are ignored by git. Keep the user-level file private.
 
 ## Local API
 

@@ -13,9 +13,12 @@ const els = {
   statusDot: document.querySelector("#statusDot"),
   statusLabel: document.querySelector("#statusLabel"),
   statusEmail: document.querySelector("#statusEmail"),
+  primaryLabel: document.querySelector("#primaryLabel"),
   primaryUsage: document.querySelector("#primaryUsage"),
+  primaryUnit: document.querySelector("#primaryUnit"),
   primaryMeter: document.querySelector("#primaryMeter"),
   readoutMeta: document.querySelector("#readoutMeta"),
+  secondaryLabel: document.querySelector("#secondaryLabel"),
   secondaryMeter: document.querySelector("#secondaryMeter"),
   weeklyUsage: document.querySelector("#weeklyUsage"),
   resetTime: document.querySelector("#resetTime"),
@@ -123,9 +126,12 @@ function renderFocus() {
     els.statusLabel.textContent = state.loading ? "Polling accounts" : "Add an account";
     els.statusEmail.textContent = "—";
     setLED(els.statusDot, state.loading ? "ok" : "warn");
+    els.primaryLabel.textContent = "5h window";
+    els.primaryUnit.textContent = "%";
     els.primaryUsage.textContent = "--";
     setBar(els.primaryMeter, null, "");
     els.readoutMeta.textContent = "—";
+    els.secondaryLabel.textContent = "Weekly";
     setBar(els.secondaryMeter, null, "");
     els.weeklyUsage.textContent = "--";
     els.resetTime.textContent = "--";
@@ -141,6 +147,7 @@ function renderFocus() {
   const secondary = getWindow(account, "secondary");
   const pct = numberOr(primary.usedPercent, null);
   const secondaryPct = numberOr(secondary.usedPercent, null);
+  const isOpenRouter = account.provider === "openrouter";
   const isLive = account.status === "ok";
   const primaryTone = isLive ? toneFromPct(pct) : statusTone(account);
   const secondaryTone = isLive ? toneFromPct(secondaryPct) : "ok";
@@ -159,28 +166,46 @@ function renderFocus() {
     displayEmail(account.expectedEmail) ||
     account.codexHome ||
     account.claudeHome ||
+    account.openrouterKeyEnv ||
     "—";
 
   els.bestName.textContent = account.name || "Account";
 
-  els.primaryUsage.textContent = pct === null ? "--" : Math.floor(pct);
-  setBar(els.primaryMeter, pct, toneClass(primaryTone, isLive));
-  const resetWindow = weeklyAtLimit ? secondary : primary;
-  els.readoutMeta.textContent = resetWindow.resetsAt
-    ? `${weeklyAtLimit ? "Weekly resets in" : "Resets in"} ${formatDuration(resetWindow.resetsAt * 1000 - Date.now())}`
-    : windowLabel(primary);
+  if (isOpenRouter) {
+    const day = getOpenRouterPeriod(account, "day");
+    const week = getOpenRouterPeriod(account, "week");
+    els.primaryLabel.textContent = "Day cost";
+    els.primaryUnit.textContent = "";
+    els.primaryUsage.textContent = compactCost(day?.costCredits);
+    setBar(els.primaryMeter, null, "is-muted");
+    els.readoutMeta.textContent = `Week ${formatCost(week?.costCredits)}`;
+    els.secondaryLabel.textContent = "Week";
+    els.weeklyUsage.textContent = compactCost(week?.costCredits);
+    setBar(els.secondaryMeter, null, "is-muted");
+    els.resetTime.textContent = "—";
+  } else {
+    els.primaryLabel.textContent = "5h window";
+    els.primaryUnit.textContent = "%";
+    els.primaryUsage.textContent = pct === null ? "--" : Math.floor(pct);
+    setBar(els.primaryMeter, pct, toneClass(primaryTone, isLive));
+    const resetWindow = weeklyAtLimit ? secondary : primary;
+    els.readoutMeta.textContent = resetWindow.resetsAt
+      ? `${weeklyAtLimit ? "Weekly resets in" : "Resets in"} ${formatDuration(resetWindow.resetsAt * 1000 - Date.now())}`
+      : windowLabel(primary);
 
-  els.weeklyUsage.textContent = secondaryPct === null ? "--" : `${Math.floor(secondaryPct)}%`;
-  setBar(els.secondaryMeter, secondaryPct, toneClass(secondaryTone, isLive));
+    els.secondaryLabel.textContent = "Weekly";
+    els.weeklyUsage.textContent = secondaryPct === null ? "--" : `${Math.floor(secondaryPct)}%`;
+    setBar(els.secondaryMeter, secondaryPct, toneClass(secondaryTone, isLive));
 
-  els.resetTime.textContent = resetWindow.resetsAt
-    ? formatDuration(resetWindow.resetsAt * 1000 - Date.now())
-    : "—";
-  els.planType.textContent = account.planType || (account.provider === "claude" ? "Claude" : "Codex");
+    els.resetTime.textContent = resetWindow.resetsAt
+      ? formatDuration(resetWindow.resetsAt * 1000 - Date.now())
+      : "—";
+  }
+  els.planType.textContent = account.planType || (account.provider === "claude" ? "Claude" : account.provider === "openrouter" ? "OpenRouter" : "Codex");
   els.updatedAt.textContent = state.updatedAt ? formatRelative(state.updatedAt) : "—";
   const isClaude = account.provider === "claude";
-  els.copyLaunch.hidden = isClaude;
-  els.copyLaunch.disabled = !isClaude && !account.codexHome;
+  els.copyLaunch.hidden = isClaude || isOpenRouter;
+  els.copyLaunch.disabled = !isClaude && !isOpenRouter && !account.codexHome;
   els.syncClaude.hidden = !isClaude;
 }
 
@@ -195,6 +220,7 @@ function renderLedger() {
     const secondary = getWindow(account, "secondary");
     const pct = numberOr(primary.usedPercent, null);
     const secondaryPct = numberOr(secondary.usedPercent, null);
+    const isOpenRouter = account.provider === "openrouter";
     const isLive = account.status === "ok";
     const primaryTone = isLive ? toneFromPct(pct) : statusTone(account);
     const secondaryTone = isLive ? toneFromPct(secondaryPct) : "ok";
@@ -209,7 +235,9 @@ function renderLedger() {
     else if (isLive && worst === "warn") row.classList.add("is-edge");
 
     const ledTone = isLive ? worst : primaryTone;
-    const pctText = pct === null ? "—" : `${Math.floor(pct)}%`;
+    const pctText = isOpenRouter
+      ? compactCost(getOpenRouterPeriod(account, "day")?.costCredits)
+      : pct === null ? "—" : `${Math.floor(pct)}%`;
     const barTone = toneClass(worst, isLive);
 
     row.innerHTML = `
@@ -220,7 +248,7 @@ function renderLedger() {
           <span class="row-pct">${escapeHtml(pctText)}</span>
         </div>
         <div class="row-bar">
-          <div class="row-bar-fill ${barTone}" style="--pct: ${clampPct(pct ?? 0)}%"></div>
+          <div class="row-bar-fill ${isOpenRouter ? "is-muted" : barTone}" style="--pct: ${isOpenRouter ? 0 : clampPct(pct ?? 0)}%"></div>
         </div>
       </div>
       <span class="row-pct" aria-hidden="true" style="visibility:hidden">—</span>
@@ -261,9 +289,46 @@ function numberOr(value, fallback) {
 
 function usageScore(account) {
   if (account.status !== "ok") return -1;
+  if (account.provider === "openrouter") {
+    const month = getOpenRouterPeriod(account, "month");
+    return numberOr(month?.costCredits, 0);
+  }
   const primary = numberOr(getWindow(account, "primary").usedPercent, 0);
   const secondary = numberOr(getWindow(account, "secondary").usedPercent, 0);
   return Math.max(primary, secondary);
+}
+
+function getOpenRouterPeriods(account) {
+  const periods = account.openrouter?.usagePeriods;
+  if (Array.isArray(periods) && periods.length) return periods;
+  const credits = account.rateLimits?.credits || {};
+  return [
+    { id: "day", costCredits: credits.usageDaily ?? null },
+    { id: "week", costCredits: credits.usageWeekly ?? null },
+    { id: "month", costCredits: credits.usageMonthly ?? null },
+    { id: "total", costCredits: credits.usage ?? null },
+  ];
+}
+
+function getOpenRouterPeriod(account, id) {
+  return getOpenRouterPeriods(account).find((period) => period.id === id) || null;
+}
+
+function formatCost(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  if (value === 0) return "$0";
+  if (Math.abs(value) < 0.01) return `$${value.toFixed(4)}`;
+  if (Math.abs(value) < 100) return `$${value.toFixed(2)}`;
+  return `$${Math.round(value).toLocaleString()}`;
+}
+
+function compactCost(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "--";
+  if (Math.abs(value) >= 1000) return `$${Math.round(value / 1000)}k`;
+  if (Math.abs(value) >= 100) return `$${Math.round(value)}`;
+  if (Math.abs(value) >= 10) return `$${value.toFixed(1)}`;
+  if (Math.abs(value) >= 0.01) return `$${value.toFixed(2)}`;
+  return `$${value.toFixed(4)}`;
 }
 
 function toneFromPct(pct) {

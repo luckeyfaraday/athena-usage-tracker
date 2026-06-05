@@ -23,6 +23,14 @@
       "claudeHome": "/home/you/.claude",
       "expectedEmail": "claude-account@example.com",
       "enabled": true
+    },
+    {
+      "id": "openrouter",
+      "name": "OpenRouter",
+      "provider": "openrouter",
+      "openrouterKeyEnv": "OPENROUTER_API_KEY_PERSONAL",
+      "openrouterUsageLog": "/home/you/openrouter-usage.jsonl",
+      "enabled": true
     }
   ]
 }

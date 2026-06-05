@@ -747,6 +747,186 @@ body {
   margin-left: 6px;
 }
 
+/* OpenRouter usage */
+
+.openrouter-focus .focus-main {
+  gap: 22px;
+}
+
+.openrouter-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  background: rgba(7, 7, 10, 0.42);
+}
+
+.openrouter-summary > div {
+  padding: 18px 20px;
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.openrouter-summary > div:last-child {
+  border-right: none;
+}
+
+.summary-label,
+.openrouter-period span,
+.openrouter-period em,
+.openrouter-models-head span,
+.credit-label,
+.credit-meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--ink-mute);
+}
+
+.openrouter-summary strong {
+  font-family: var(--font-display);
+  font-size: 42px;
+  line-height: 1;
+  font-weight: 400;
+  color: var(--ink);
+}
+
+.openrouter-periods {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+}
+
+.openrouter-period {
+  min-height: 116px;
+  padding: 16px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.openrouter-period strong {
+  font-family: var(--font-display);
+  font-size: 30px;
+  line-height: 1;
+  font-weight: 400;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.openrouter-period em {
+  font-style: normal;
+  letter-spacing: 0.08em;
+  color: var(--ink-soft);
+}
+
+.openrouter-models {
+  border: 1px solid var(--line);
+  background: rgba(7, 7, 10, 0.36);
+}
+
+.openrouter-models-head {
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+}
+
+.openrouter-models h3 {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  color: var(--ink-soft);
+}
+
+.openrouter-models table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.openrouter-models th,
+.openrouter-models td {
+  padding: 13px 18px;
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.openrouter-models th {
+  color: var(--ink-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-size: 9.5px;
+}
+
+.openrouter-models th:nth-child(2),
+.openrouter-models th:nth-child(3),
+.openrouter-models td:nth-child(2),
+.openrouter-models td:nth-child(3) {
+  text-align: right;
+}
+
+.openrouter-models tr:last-child td {
+  border-bottom: none;
+}
+
+.openrouter-credit-block {
+  margin: auto 0;
+  border: 1px solid var(--line);
+  background: rgba(7, 7, 10, 0.42);
+  padding: 28px;
+  display: grid;
+  gap: 18px;
+}
+
+.openrouter-credit-block strong {
+  font-family: var(--font-display);
+  font-size: 64px;
+  line-height: 1;
+  font-weight: 400;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.credit-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  letter-spacing: 0.12em;
+}
+
+.credit-meta span:last-child {
+  color: var(--ink-soft);
+  text-align: right;
+}
+
+.openrouter-card-lines {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--ink-soft);
+}
+
 /* meta strip */
 
 .focus-footer {
@@ -1360,7 +1540,7 @@ body {
 
 .provider-switch {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 0;
   border: 1px solid var(--line-strong);
 }
@@ -1554,6 +1734,9 @@ body {
   .vitals > div { min-width: 100px; padding: 4px 16px; }
   .focus-name { font-size: 44px; }
   .readout-figure .integer { font-size: 120px; }
+  .openrouter-periods {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 800px) {
@@ -1569,4 +1752,28 @@ body {
   .readout-figure .integer { font-size: 96px; }
   .focus-stats { grid-template-columns: 1fr 1fr; gap: 16px; }
   .ledger-head h2 { font-size: 28px; }
+  .openrouter-summary,
+  .openrouter-periods {
+    grid-template-columns: 1fr;
+  }
+  .openrouter-summary > div {
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+  }
+  .openrouter-summary > div:last-child {
+    border-bottom: none;
+  }
+  .openrouter-credit-block strong {
+    font-size: 44px;
+  }
+  .provider-switch {
+    grid-template-columns: 1fr;
+  }
+  .provider-switch label {
+    border-right: none;
+    border-bottom: 1px solid var(--line-strong);
+  }
+  .provider-switch label:last-child {
+    border-bottom: none;
+  }
 }

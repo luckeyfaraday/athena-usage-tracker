@@ -67,12 +67,12 @@
 
         <div class="readout">
           <div class="readout-label">
-            <span>5h window</span>
+            <span id="primaryLabel">5h window</span>
             <span id="readoutMeta">—</span>
           </div>
           <div class="readout-figure">
             <span class="integer" id="primaryUsage">--</span>
-            <span class="unit"><em>%</em></span>
+            <span class="unit"><em id="primaryUnit">%</em></span>
           </div>
           <div class="readout-bar">
             <div id="primaryMeter" class="readout-bar-fill"></div>
@@ -80,7 +80,7 @@
         </div>
 
         <div class="meter-row">
-          <span class="label">Weekly</span>
+          <span id="secondaryLabel" class="label">Weekly</span>
           <div class="bar"><div id="secondaryMeter" class="fill"></div></div>
           <span id="weeklyUsage" class="pct">--</span>
         </div>

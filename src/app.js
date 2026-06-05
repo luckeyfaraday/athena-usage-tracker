@@ -25,6 +25,10 @@ const els = {
   codexHomeField: document.querySelector("#codexHomeField"),
   claudeHome: document.querySelector("#claudeHome"),
   claudeHomeField: document.querySelector("#claudeHomeField"),
+  openrouterKeyEnv: document.querySelector("#openrouterKeyEnv"),
+  openrouterKeyEnvField: document.querySelector("#openrouterKeyEnvField"),
+  openrouterUsageLog: document.querySelector("#openrouterUsageLog"),
+  openrouterUsageLogField: document.querySelector("#openrouterUsageLogField"),
   expectedEmail: document.querySelector("#expectedEmail"),
   toast: document.querySelector("#toast"),
 };
@@ -181,9 +185,14 @@ function renderFocus(accounts) {
   state.selectedId = account.id;
 
   const status = statusMeta(account);
+  const path = providerPath(account);
+  if (account.provider === "openrouter") {
+    renderOpenRouterFocus(account, status, path);
+    return;
+  }
+
   const primary = getWindow(account, "primary");
   const secondary = getWindow(account, "secondary");
-  const path = providerPath(account);
   const primaryPct = typeof primary.usedPercent === "number" ? primary.usedPercent : null;
   const secondaryPct = typeof secondary.usedPercent === "number" ? secondary.usedPercent : null;
 
@@ -200,7 +209,7 @@ function renderFocus(accounts) {
         <span class="led ${ledClass(status.tone)}"></span>
         <span>${escapeHtml(status.label)}</span>
         <span class="sep">/</span>
-        <span>${escapeHtml(account.provider === "claude" ? "Claude Code" : "Codex · ChatGPT")}</span>
+        <span>${escapeHtml(account.provider === "claude" ? "Claude Code" : account.provider === "openrouter" ? "OpenRouter" : "Codex · ChatGPT")}</span>
         ${account.usageSource ? `<span class="sep">/</span><span>${escapeHtml(account.usageSource)}</span>` : ""}
       </div>
 
@@ -237,7 +246,7 @@ function renderFocus(accounts) {
       <dl class="focus-stats">
         <div>
           <dt>Source</dt>
-          <dd class="strong">${escapeHtml(account.usageSource || (account.provider === "claude" ? "claude-cli" : "not refreshed"))}</dd>
+          <dd class="strong">${escapeHtml(account.usageSource || (account.provider === "claude" ? "claude-cli" : account.provider === "openrouter" ? "openrouter-key-api" : "not refreshed"))}</dd>
         </div>
         <div>
           <dt>Updated</dt>
@@ -280,6 +289,160 @@ function renderFocus(accounts) {
       }, 1200);
     });
   });
+}
+
+function renderOpenRouterFocus(account, status, path) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "focus-grid openrouter-focus";
+  const periods = getOpenRouterPeriods(account);
+  const activePeriod = periods.find((period) => period.id === "month") || periods[0];
+  const models = activePeriod?.models?.length ? activePeriod.models : account.openrouter?.models || [];
+  const totals = account.openrouter?.totals || {};
+  const keyLabel = account.openrouter?.keyLabel || account.rateLimits?.limitName || account.name;
+  const creditLimit = account.rateLimits?.credits?.limit;
+  const creditRemaining = account.rateLimits?.credits?.limitRemaining;
+  const creditUsed = typeof creditLimit === "number" && typeof creditRemaining === "number"
+    ? Math.max(0, creditLimit - creditRemaining)
+    : totals.costCredits;
+
+  wrapper.innerHTML = `
+    <div class="focus-main">
+      <div class="focus-status">
+        <span class="led ${ledClass(status.tone)}"></span>
+        <span>${escapeHtml(status.label)}</span>
+        <span class="sep">/</span>
+        <span>OpenRouter</span>
+        ${account.usageSource ? `<span class="sep">/</span><span>${escapeHtml(account.usageSource)}</span>` : ""}
+      </div>
+
+      <div class="focus-title">
+        <h2 class="focus-name">${escapeHtml(account.name)}</h2>
+      </div>
+
+      <div class="focus-tagline">
+        ${account.planType ? `<span class="tag">${escapeHtml(account.planType)}</span>` : ""}
+        <span class="focus-handle">${escapeHtml(keyLabel)}</span>
+      </div>
+
+      <div class="openrouter-summary">
+        <div>
+          <span class="summary-label">Total cost</span>
+          <strong>${formatCost(creditUsed)}</strong>
+        </div>
+        <div>
+          <span class="summary-label">Total tokens</span>
+          <strong>${formatTokens(totals.tokens)}</strong>
+        </div>
+        <div>
+          <span class="summary-label">Models</span>
+          <strong>${models.length ? models.length : "—"}</strong>
+        </div>
+      </div>
+
+      ${renderOpenRouterPeriodCards(periods)}
+      ${renderOpenRouterModelTable(models, activePeriod)}
+      ${renderAlert(account)}
+    </div>
+
+    <aside class="focus-aside ${status.tone === "danger" ? "is-danger" : status.tone === "warn" ? "is-warn" : ""}">
+      <div class="openrouter-credit-block">
+        <span class="credit-label">Credit balance</span>
+        <strong>${formatCost(creditRemaining)}</strong>
+        <div class="credit-meta">
+          <span>Limit</span>
+          <span>${formatCost(creditLimit)}</span>
+        </div>
+        <div class="credit-meta">
+          <span>Reset</span>
+          <span>${escapeHtml(account.rateLimits?.credits?.limitReset || "none")}</span>
+        </div>
+        <div class="credit-meta">
+          <span>BYOK</span>
+          <span>${formatCost(account.rateLimits?.credits?.byokUsage)}</span>
+        </div>
+      </div>
+    </aside>
+
+    <div class="focus-footer" style="grid-column: 1 / -1;">
+      <dl class="focus-stats">
+        <div>
+          <dt>Source</dt>
+          <dd class="strong">${escapeHtml(account.usageSource || "openrouter-key-api")}</dd>
+        </div>
+        <div>
+          <dt>Updated</dt>
+          <dd>${account.updatedAt ? new Date(account.updatedAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—"}</dd>
+        </div>
+        <div>
+          <dt>${escapeHtml(path.label)}</dt>
+          <dd title="${escapeHtml(path.value)}">${escapeHtml(path.value)}</dd>
+        </div>
+        <div>
+          <dt>Key</dt>
+          <dd class="strong">${escapeHtml(keyLabel)}</dd>
+        </div>
+      </dl>
+      <div class="focus-actions">
+        <button class="btn ghost" data-action="test">Run test</button>
+        <button class="btn ghost" data-action="delete">Remove</button>
+      </div>
+    </div>
+  `;
+
+  els.focusPanel.append(wrapper);
+  wrapper.querySelector('[data-action="test"]').addEventListener("click", () => testAccount(account));
+  wrapper.querySelector('[data-action="delete"]').addEventListener("click", () => deleteAccount(account));
+}
+
+function renderOpenRouterPeriodCards(periods) {
+  return `
+    <div class="openrouter-periods">
+      ${periods.map((period) => `
+        <section class="openrouter-period">
+          <span>${escapeHtml(period.label)}</span>
+          <strong>${formatCost(period.costCredits)}</strong>
+          <em>${formatTokens(period.tokens)} tokens</em>
+        </section>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderOpenRouterModelTable(models, period) {
+  const rows = models.length
+    ? models.map((model) => `
+        <tr>
+          <td>${escapeHtml(model.model || model.name || "unknown")}</td>
+          <td>${formatTokens(model.tokens)}</td>
+          <td>${formatCost(model.costCredits ?? model.cost)}</td>
+        </tr>
+      `).join("")
+    : `
+        <tr>
+          <td>—</td>
+          <td>—</td>
+          <td>${formatCost(period?.costCredits)}</td>
+        </tr>
+      `;
+
+  return `
+    <div class="openrouter-models">
+      <div class="openrouter-models-head">
+        <h3>Models</h3>
+        <span>${escapeHtml(period?.label || "Past month")}</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>Tokens</th>
+            <th>Cost</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
 }
 
 function renderPrimaryReadout(intPart, decPart, primary, tone) {
@@ -357,7 +520,7 @@ function renderAside(account, primary, remainingMs, status) {
           </div>
           <div class="dial-caption">
             ${account.status === "ok" ? "Window resetting" : status.label}
-            <strong>${escapeHtml(account.codexHome || "")}</strong>
+            <strong>${escapeHtml(account.provider === "openrouter" ? account.openrouterKeyEnv || "" : account.codexHome || "")}</strong>
           </div>
         </div>
       </aside>
@@ -428,6 +591,16 @@ function renderDial(progress, _label) {
 }
 
 function renderAlert(account) {
+  if (account.status === "ok" && account.sourceWarning) {
+    return `
+      <div class="alert is-warn">
+        <div class="alert-head">
+          <h3 class="alert-title">Usage log</h3>
+        </div>
+        <p class="alert-msg">${escapeHtml(account.sourceWarning)}</p>
+      </div>
+    `;
+  }
   if (!account.status || account.status === "ok") return "";
 
   if (account.status === "manual_lockout" && account.manualOverride) {
@@ -525,6 +698,8 @@ function renderLedger(accounts) {
     const secondaryTone = toneFromPct(secondaryPct);
     const worstTone = worstOf(primaryTone, secondaryTone);
     const isLive = account.status === "ok";
+    const isOpenRouter = account.provider === "openrouter";
+    const openrouterSummary = isOpenRouter ? openRouterCardSummary(account) : null;
     const toneClass =
       !isLive ? "is-muted" : primaryTone === "danger" ? "is-danger" : primaryTone === "warn" ? "is-warn" : "";
     const secondaryToneClass =
@@ -539,29 +714,43 @@ function renderLedger(accounts) {
           <span class="led ${ledClass(isLive && worstTone === "danger" ? "danger" : isLive && worstTone === "warn" ? "warn" : status.tone)}"></span>
           <span>${escapeHtml(status.label)}</span>
         </div>
-        <span class="tag">${escapeHtml(account.planType || (account.provider === "claude" ? "Claude" : "Codex"))}</span>
+        <span class="tag">${escapeHtml(account.planType || (account.provider === "claude" ? "Claude" : account.provider === "openrouter" ? "OpenRouter" : "Codex"))}</span>
       </div>
       <h3 class="card-name">${escapeHtml(account.name)}</h3>
-      <p class="card-email">${escapeHtml(displayEmail(account.email || account.expectedEmail) || "—")}</p>
+      <p class="card-email">${escapeHtml(isOpenRouter ? account.openrouterKeyEnv || "—" : displayEmail(account.email || account.expectedEmail) || "—")}</p>
       <div class="card-meter">
-        <div class="card-meter-top">
-          <span class="card-meter-pct">${pct !== null ? Math.floor(pct) : "—"}<em>%</em></span>
-          <span class="card-meter-label">5h window</span>
-        </div>
-        <div class="card-meter-bar">
-          <div class="card-meter-fill ${toneClass}" style="--pct: ${pct !== null ? clampPct(pct) : 0}%"></div>
-        </div>
-        ${
-          secondaryPct !== null
-            ? `
-              <div class="card-meter-row">
-                <span class="label">Weekly</span>
-                <div class="bar"><div class="fill ${secondaryToneClass}" style="--pct: ${clampPct(secondaryPct)}%"></div></div>
-                <span class="pct">${Math.floor(secondaryPct)}%</span>
-              </div>
-            `
-            : ""
-        }
+        ${isOpenRouter
+          ? `
+            <div class="card-meter-top">
+              <span class="card-meter-pct">${escapeHtml(openrouterSummary.cost)}</span>
+              <span class="card-meter-label">Month cost</span>
+            </div>
+            <div class="openrouter-card-lines">
+              <span>Day ${escapeHtml(openrouterSummary.day)}</span>
+              <span>Week ${escapeHtml(openrouterSummary.week)}</span>
+              <span>Tokens ${escapeHtml(openrouterSummary.tokens)}</span>
+            </div>
+          `
+          : `
+            <div class="card-meter-top">
+              <span class="card-meter-pct">${pct !== null ? Math.floor(pct) : "—"}<em>%</em></span>
+              <span class="card-meter-label">5h window</span>
+            </div>
+            <div class="card-meter-bar">
+              <div class="card-meter-fill ${toneClass}" style="--pct: ${pct !== null ? clampPct(pct) : 0}%"></div>
+            </div>
+            ${
+              secondaryPct !== null
+                ? `
+                  <div class="card-meter-row">
+                    <span class="label">Weekly</span>
+                    <div class="bar"><div class="fill ${secondaryToneClass}" style="--pct: ${clampPct(secondaryPct)}%"></div></div>
+                    <span class="pct">${Math.floor(secondaryPct)}%</span>
+                  </div>
+                `
+                : ""
+            }
+          `}
       </div>
       <footer class="card-foot">
         <span>${escapeHtml(cardFootLeft(account))}</span>
@@ -603,6 +792,9 @@ function cardFootLeft(account) {
 }
 
 function cardFootRight(account) {
+  if (account.provider === "openrouter") {
+    return `total ${formatCost(getOpenRouterPeriod(account, "total")?.costCredits)}`;
+  }
   if (account.status === "ok") {
     const primary = getWindow(account, "primary");
     if (primary.resetsAt) return `resets ${formatAbsoluteReset(primary.resetsAt, true)}`;
@@ -626,9 +818,52 @@ function getWindow(account, key) {
 function usageScore(account) {
   if (account.status === "manual_lockout") return Number.POSITIVE_INFINITY;
   if (account.status !== "ok" && account.status !== "metadata_only") return Number.POSITIVE_INFINITY;
+  if (account.provider === "openrouter") {
+    const month = getOpenRouterPeriod(account, "month");
+    return typeof month?.costCredits === "number" ? month.costCredits : 0;
+  }
   const primary = getWindow(account, "primary");
   if (typeof primary.usedPercent !== "number") return Number.POSITIVE_INFINITY;
   return primary.usedPercent;
+}
+
+function getOpenRouterPeriods(account) {
+  const periods = account.openrouter?.usagePeriods;
+  if (Array.isArray(periods) && periods.length) return periods;
+  const credits = account.rateLimits?.credits || {};
+  return [
+    { id: "30m", label: "Past 30 minutes", costCredits: null, tokens: null, models: [] },
+    { id: "day", label: "Past day", costCredits: credits.usageDaily ?? null, tokens: null, models: [] },
+    { id: "week", label: "Past Week", costCredits: credits.usageWeekly ?? null, tokens: null, models: [] },
+    { id: "month", label: "Past Month", costCredits: credits.usageMonthly ?? null, tokens: null, models: [] },
+    { id: "total", label: "Total", costCredits: credits.usage ?? null, tokens: null, models: [] },
+  ];
+}
+
+function getOpenRouterPeriod(account, id) {
+  return getOpenRouterPeriods(account).find((period) => period.id === id) || null;
+}
+
+function openRouterCardSummary(account) {
+  return {
+    cost: formatCost(getOpenRouterPeriod(account, "month")?.costCredits),
+    day: formatCost(getOpenRouterPeriod(account, "day")?.costCredits),
+    week: formatCost(getOpenRouterPeriod(account, "week")?.costCredits),
+    tokens: formatTokens(account.openrouter?.totals?.tokens),
+  };
+}
+
+function formatCost(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  if (value === 0) return "$0";
+  if (Math.abs(value) < 0.01) return `$${value.toFixed(4)}`;
+  if (Math.abs(value) < 100) return `$${value.toFixed(2)}`;
+  return `$${Math.round(value).toLocaleString()}`;
+}
+
+function formatTokens(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  return Math.round(value).toLocaleString();
 }
 
 function clampPct(value) {
@@ -675,6 +910,9 @@ function statusMeta(account) {
 function providerPath(account) {
   if (account.provider === "claude") {
     return { label: "Claude home", value: account.claudeHome || "~/.claude" };
+  }
+  if (account.provider === "openrouter") {
+    return { label: "API key env var", value: account.openrouterKeyEnv || "—" };
   }
   return { label: "Codex home", value: account.codexHome || "" };
 }
@@ -815,6 +1053,8 @@ function openAddDialog() {
   els.form.reset();
   els.codexHome.value = "~/.codex-accounts/account2";
   els.claudeHome.value = "";
+  els.openrouterKeyEnv.value = "";
+  els.openrouterUsageLog.value = "";
   els.expectedEmail.value = "";
   syncProviderFields();
   els.dialog.showModal();
@@ -824,7 +1064,10 @@ function syncProviderFields() {
   const provider = els.form.querySelector('input[name="provider"]:checked').value;
   els.codexHomeField.hidden = provider !== "codex";
   els.claudeHomeField.hidden = provider !== "claude";
+  els.openrouterKeyEnvField.hidden = provider !== "openrouter";
+  els.openrouterUsageLogField.hidden = provider !== "openrouter";
   els.codexHome.required = provider === "codex";
+  els.openrouterKeyEnv.required = provider === "openrouter";
 }
 
 function toast(message, tone = "") {
@@ -865,6 +1108,8 @@ els.form.addEventListener("submit", async (event) => {
         provider,
         codexHome: els.codexHome.value,
         claudeHome: els.claudeHome.value,
+        openrouterKeyEnv: els.openrouterKeyEnv.value,
+        openrouterUsageLog: els.openrouterUsageLog.value,
         expectedEmail: els.expectedEmail.value,
       }),
     });
