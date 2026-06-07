@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+import webpush from "web-push";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -22,6 +23,7 @@ const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || "127.0.0.1";
 const DATA_DIR = path.join(__dirname, "data");
 const ACCOUNTS_FILE = path.join(DATA_DIR, "accounts.json");
+const NOTIFICATIONS_FILE = path.join(DATA_DIR, "notifications.json");
 const CLAUDE_STATUSLINE_CAPTURE = path.join(__dirname, "scripts", "claude-statusline-capture.js");
 const CHATGPT_USAGE_URL = "https://chatgpt.com/backend-api/codex/usage";
 const TOKEN_URL = "https://auth.openai.com/oauth/token";
@@ -29,10 +31,14 @@ const OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key";
 const OPENROUTER_KEYS_URL = "https://openrouter.ai/api/v1/keys";
 const OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits";
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+const NOTIFICATION_WARN_THRESHOLD = Number(process.env.NOTIFICATION_WARN_THRESHOLD || 85);
+const NOTIFICATION_POLL_INTERVAL_MS = Number(process.env.NOTIFICATION_POLL_INTERVAL_MS || 60_000);
+const NOTIFICATION_REPEAT_INTERVAL_MS = Number(process.env.NOTIFICATION_REPEAT_INTERVAL_MS || 4 * 60 * 60 * 1000);
 const PUBLIC_FILES = {
   "/": { file: "index.html", type: "text/html; charset=utf-8" },
   "/index.html": { file: "index.html", type: "text/html; charset=utf-8" },
   "/widget.html": { file: "widget.html", type: "text/html; charset=utf-8" },
+  "/sw.js": { file: "sw.js", type: "text/javascript; charset=utf-8" },
   "/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
   "/widget.css": { file: "widget.css", type: "text/css; charset=utf-8" },
   "/src/app.js": { file: "src/app.js", type: "text/javascript; charset=utf-8" },
@@ -108,6 +114,38 @@ async function writeAccounts(accounts) {
 
 async function writeJson(file, value) {
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+async function readNotificationState() {
+  await mkdir(DATA_DIR, { recursive: true });
+  if (!existsSync(NOTIFICATIONS_FILE)) {
+    const vapidKeys = webpush.generateVAPIDKeys();
+    await writeNotificationState({
+      vapidKeys,
+      subscriptions: [],
+      lastAlerts: {},
+    });
+  }
+  const raw = await readFile(NOTIFICATIONS_FILE, "utf8");
+  const parsed = JSON.parse(raw);
+  if (!parsed.vapidKeys?.publicKey || !parsed.vapidKeys?.privateKey) {
+    parsed.vapidKeys = webpush.generateVAPIDKeys();
+  }
+  if (!Array.isArray(parsed.subscriptions)) parsed.subscriptions = [];
+  if (!parsed.lastAlerts || typeof parsed.lastAlerts !== "object") parsed.lastAlerts = {};
+  return parsed;
+}
+
+async function writeNotificationState(state) {
+  await writeJson(NOTIFICATIONS_FILE, state);
+}
+
+function configureWebPush(state) {
+  webpush.setVapidDetails(
+    process.env.VAPID_SUBJECT || "mailto:athena-usage-tracker@localhost",
+    state.vapidKeys.publicKey,
+    state.vapidKeys.privateKey,
+  );
 }
 
 function sendJson(res, status, body) {
@@ -1500,6 +1538,137 @@ function invalidateUsageCache(id) {
   else usageCache.clear();
 }
 
+function normalizePushSubscription(input) {
+  if (!input || typeof input !== "object") throw new Error("Missing push subscription");
+  if (!input.endpoint || typeof input.endpoint !== "string") throw new Error("Invalid push subscription endpoint");
+  if (!input.keys?.p256dh || !input.keys?.auth) throw new Error("Invalid push subscription keys");
+  return {
+    endpoint: input.endpoint,
+    expirationTime: input.expirationTime ?? null,
+    keys: {
+      p256dh: input.keys.p256dh,
+      auth: input.keys.auth,
+    },
+  };
+}
+
+async function sendPushToSubscriptions(state, payload) {
+  configureWebPush(state);
+  const body = JSON.stringify({
+    url: "/",
+    badge: "/",
+    timestamp: Date.now(),
+    ...payload,
+  });
+  const kept = [];
+  let sent = 0;
+  for (const item of state.subscriptions) {
+    try {
+      await webpush.sendNotification(item.subscription, body);
+      kept.push(item);
+      sent += 1;
+    } catch (error) {
+      if (error.statusCode !== 404 && error.statusCode !== 410) {
+        kept.push(item);
+        console.warn(`Push notification failed: ${error.message}`);
+      }
+    }
+  }
+  state.subscriptions = kept;
+  return sent;
+}
+
+function alertLevelForWindow(rateLimits, windowKey, windowUsage) {
+  const pct = typeof windowUsage?.usedPercent === "number" ? windowUsage.usedPercent : null;
+  if (pct !== null) {
+    if (pct >= 100) return "limit";
+    if (pct >= NOTIFICATION_WARN_THRESHOLD) return "warn";
+    return null;
+  }
+  if (windowKey === "primary" && (rateLimits?.limitReached === true || rateLimits?.allowed === false)) return "limit";
+  return null;
+}
+
+function getWindow(account, key) {
+  return account.rateLimits?.[key] || {};
+}
+
+function notificationWindowLabel(key) {
+  return key === "secondary" ? "weekly" : "5-hour";
+}
+
+function buildUsageAlert(account, windowKey, windowUsage, level) {
+  const pct = Math.floor(windowUsage.usedPercent ?? 100);
+  const windowLabel = notificationWindowLabel(windowKey);
+  const limitCopy = level === "limit" ? "reached" : `at ${pct}%`;
+  const resetCopy = windowUsage.resetsAt ? ` Resets ${formatNotificationReset(windowUsage.resetsAt)}.` : "";
+  return {
+    title: `${account.name || "Account"} ${windowLabel} limit ${limitCopy}`,
+    body: `${account.provider === "claude" ? "Claude Code" : "Codex"} usage needs attention.${resetCopy}`,
+    tag: `athena-${account.id}-${windowKey}`,
+    accountId: account.id,
+  };
+}
+
+function shouldSendAlert(lastAlert, level) {
+  if (!lastAlert) return true;
+  const rank = { warn: 1, limit: 2 };
+  if ((rank[level] || 0) > (rank[lastAlert.level] || 0)) return true;
+  const lastSentAt = lastAlert.sentAt ? new Date(lastAlert.sentAt).getTime() : 0;
+  if (!lastSentAt || Number.isNaN(lastSentAt)) return true;
+  return Date.now() - lastSentAt >= NOTIFICATION_REPEAT_INTERVAL_MS;
+}
+
+function formatNotificationReset(seconds) {
+  const date = new Date(seconds * 1000);
+  if (Number.isNaN(date.getTime())) return "later";
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
+async function checkUsageNotifications() {
+  const notificationState = await readNotificationState();
+  if (!notificationState.subscriptions.length) return { sent: 0, checked: 0 };
+
+  const accounts = (await readAccounts()).filter((account) => account.enabled !== false);
+  if (!accounts.length) return { sent: 0, checked: 0 };
+
+  const usage = await Promise.all(accounts.map((account) => cachedQueryAccount(account, { fresh: true })));
+  let sent = 0;
+  for (const account of usage) {
+    if (account.status !== "ok") continue;
+    for (const windowKey of ["primary", "secondary"]) {
+      const windowUsage = getWindow(account, windowKey);
+      const level = alertLevelForWindow(account.rateLimits, windowKey, windowUsage);
+      const alertKey = `${account.id}:${windowKey}`;
+      if (!level) {
+        delete notificationState.lastAlerts[alertKey];
+        continue;
+      }
+      if (!shouldSendAlert(notificationState.lastAlerts[alertKey], level)) continue;
+      sent += await sendPushToSubscriptions(notificationState, buildUsageAlert(account, windowKey, windowUsage, level));
+      notificationState.lastAlerts[alertKey] = {
+        level,
+        resetAt: windowUsage.resetsAt || null,
+        sentAt: new Date().toISOString(),
+      };
+    }
+  }
+
+  await writeNotificationState(notificationState);
+  return { sent, checked: usage.length };
+}
+
+async function runNotificationPoll() {
+  try {
+    await checkUsageNotifications();
+  } catch (error) {
+    console.warn(`Notification poll failed: ${error.message}`);
+  }
+}
+
 async function handleApi(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
@@ -1514,6 +1683,62 @@ async function handleApi(req, res) {
     const accounts = (await readAccounts()).filter((account) => account.enabled !== false);
     const usage = await Promise.all(accounts.map((account) => cachedQueryAccount(account, { fresh })));
     sendJson(res, 200, { usage });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/notifications") {
+    const notificationState = await readNotificationState();
+    configureWebPush(notificationState);
+    sendJson(res, 200, {
+      publicKey: notificationState.vapidKeys.publicKey,
+      subscriptions: notificationState.subscriptions.length,
+      threshold: NOTIFICATION_WARN_THRESHOLD,
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/notifications/subscribe") {
+    const input = await readBody(req);
+    const subscription = normalizePushSubscription(input.subscription || input);
+    const notificationState = await readNotificationState();
+    const entry = {
+      id: randomUUID(),
+      subscription,
+      userAgent: req.headers["user-agent"] || "",
+      createdAt: new Date().toISOString(),
+    };
+    notificationState.subscriptions = notificationState.subscriptions
+      .filter((item) => item.subscription.endpoint !== subscription.endpoint)
+      .concat(entry);
+    await writeNotificationState(notificationState);
+    sendJson(res, 201, { ok: true, subscriptions: notificationState.subscriptions.length });
+    return;
+  }
+
+  if (req.method === "DELETE" && url.pathname === "/api/notifications/subscribe") {
+    const input = await readBody(req);
+    const endpoint = String(input.endpoint || "");
+    const notificationState = await readNotificationState();
+    notificationState.subscriptions = notificationState.subscriptions
+      .filter((item) => item.subscription.endpoint !== endpoint);
+    await writeNotificationState(notificationState);
+    sendJson(res, 200, { ok: true, subscriptions: notificationState.subscriptions.length });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/notifications/test") {
+    const notificationState = await readNotificationState();
+    if (!notificationState.subscriptions.length) {
+      sendJson(res, 400, { error: "No notification subscriptions registered" });
+      return;
+    }
+    const sent = await sendPushToSubscriptions(notificationState, {
+      title: "Athena Usage Tracker",
+      body: "Mobile alerts are connected.",
+      tag: "athena-test",
+    });
+    await writeNotificationState(notificationState);
+    sendJson(res, 200, { ok: true, sent });
     return;
   }
 
@@ -1721,6 +1946,11 @@ async function serveStatic(req, res) {
 }
 
 await ensureAccountsFile();
+
+if (NOTIFICATION_POLL_INTERVAL_MS > 0) {
+  setTimeout(runNotificationPoll, 5_000);
+  setInterval(runNotificationPoll, NOTIFICATION_POLL_INTERVAL_MS);
+}
 
 createServer(async (req, res) => {
   try {

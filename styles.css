@@ -240,6 +240,8 @@ body {
 .masthead-actions {
   display: flex;
   gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .btn {
@@ -1746,6 +1748,8 @@ body {
     padding: 24px;
   }
   .vitals { order: 3; }
+  .masthead-actions { justify-content: flex-start; }
+  .masthead-actions .btn { padding: 9px 12px; }
   .stage { padding: 28px 24px 60px; gap: 36px; }
   .focus-main, .focus-aside, .focus-footer { padding: 28px 24px; }
   .focus-name { font-size: 36px; }

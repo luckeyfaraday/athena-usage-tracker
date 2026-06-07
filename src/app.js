@@ -4,6 +4,13 @@ const state = {
   selectedId: null,
   loading: false,
   lastRefresh: null,
+  notifications: {
+    supported: false,
+    subscribed: false,
+    permission: "default",
+    publicKey: null,
+    subscriptions: 0,
+  },
 };
 
 const els = {
@@ -16,6 +23,7 @@ const els = {
   refreshUsage: document.querySelector("#refreshUsage"),
   openAddDialog: document.querySelector("#openAddDialog"),
   privacyToggle: document.querySelector("#privacyToggle"),
+  notificationToggle: document.querySelector("#notificationToggle"),
   dialog: document.querySelector("#accountDialog"),
   form: document.querySelector("#accountForm"),
   closeDialog: document.querySelector("#closeDialog"),
@@ -44,6 +52,8 @@ const icons = {
   eye: '<svg viewBox="0 0 24 24" stroke-width="1.5"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
   eyeOff:
     '<svg viewBox="0 0 24 24" stroke-width="1.5"><path d="M3 3l18 18"/><path d="M10.7 5.1A9.5 9.5 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.7 6.7C3.6 8.5 2 12 2 12s3.5 7 10 7c1.9 0 3.6-.4 5.1-1.3"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
+  bell:
+    '<svg viewBox="0 0 24 24" stroke-width="1.5"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>',
 };
 
 function maskEmail(value) {
@@ -132,6 +142,7 @@ function render() {
   renderVitals(merged);
   renderFocus(merged);
   renderLedger(merged);
+  renderNotificationButton();
 }
 
 function getMergedAccounts() {
@@ -993,6 +1004,110 @@ function looksLikeSharedCodexHome(value) {
   return path === "~/.codex" || path.endsWith("/.codex");
 }
 
+/* ── NOTIFICATIONS ──────────────────────────────────────── */
+
+function pushSupported() {
+  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window && window.isSecureContext;
+}
+
+async function initNotifications() {
+  state.notifications.supported = pushSupported();
+  state.notifications.permission = "Notification" in window ? Notification.permission : "default";
+  renderNotificationButton();
+  if (!state.notifications.supported) return;
+
+  try {
+    const config = await api("/api/notifications");
+    state.notifications.publicKey = config.publicKey;
+    state.notifications.subscriptions = config.subscriptions || 0;
+    const registration = await navigator.serviceWorker.register("/sw.js");
+    const subscription = await registration.pushManager.getSubscription();
+    state.notifications.subscribed = Boolean(subscription);
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    renderNotificationButton();
+  }
+}
+
+function renderNotificationButton() {
+  if (!els.notificationToggle) return;
+  const label = els.notificationToggle.querySelector(".notification-label");
+  const { supported, subscribed, permission } = state.notifications;
+  els.notificationToggle.disabled = !supported || permission === "denied";
+  els.notificationToggle.setAttribute("aria-pressed", String(subscribed));
+  els.notificationToggle.title = !supported
+    ? "Alerts require HTTPS or localhost"
+    : permission === "denied"
+      ? "Alerts blocked by browser"
+      : subscribed
+        ? "Disable mobile alerts"
+        : "Enable mobile alerts";
+  if (label) {
+    label.textContent = !supported
+      ? "No alerts"
+      : permission === "denied"
+        ? "Blocked"
+        : subscribed
+          ? "Alerting"
+          : "Alerts";
+  }
+}
+
+async function toggleNotifications() {
+  if (!state.notifications.supported) {
+    toast("Open over HTTPS or localhost to enable alerts", "error");
+    return;
+  }
+  const registration = await navigator.serviceWorker.ready;
+  const existing = await registration.pushManager.getSubscription();
+  if (existing) {
+    await api("/api/notifications/subscribe", {
+      method: "DELETE",
+      body: JSON.stringify({ endpoint: existing.endpoint }),
+    });
+    await existing.unsubscribe();
+    state.notifications.subscribed = false;
+    toast("Mobile alerts disabled", "ok");
+    renderNotificationButton();
+    return;
+  }
+
+  const permission = await Notification.requestPermission();
+  state.notifications.permission = permission;
+  if (permission !== "granted") {
+    renderNotificationButton();
+    toast("Alerts were not granted", "error");
+    return;
+  }
+
+  if (!state.notifications.publicKey) {
+    const config = await api("/api/notifications");
+    state.notifications.publicKey = config.publicKey;
+  }
+
+  const subscription = await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(state.notifications.publicKey),
+  });
+  await api("/api/notifications/subscribe", {
+    method: "POST",
+    body: JSON.stringify({ subscription: subscription.toJSON() }),
+  });
+  state.notifications.subscribed = true;
+  renderNotificationButton();
+  toast("Mobile alerts enabled", "ok");
+}
+
+function urlBase64ToUint8Array(value) {
+  const padding = "=".repeat((4 - value.length % 4) % 4);
+  const base64 = (value + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  const output = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i += 1) output[i] = raw.charCodeAt(i);
+  return output;
+}
+
 /* ── ACTIONS ────────────────────────────────────────────── */
 
 async function testAccount(account) {
@@ -1084,6 +1199,9 @@ function toast(message, tone = "") {
 els.refreshUsage.addEventListener("click", refreshUsage);
 els.openAddDialog.addEventListener("click", openAddDialog);
 els.privacyToggle?.addEventListener("click", () => applyPrivacy(!privacyMode));
+els.notificationToggle?.addEventListener("click", () => {
+  toggleNotifications().catch((error) => toast(error.message, "error"));
+});
 window.addEventListener("storage", (event) => {
   if (event.key === PRIVACY_KEY) applyPrivacy(event.newValue === "on", { persist: false });
 });
@@ -1126,6 +1244,7 @@ hydrateIcons();
 applyPrivacy(localStorage.getItem(PRIVACY_KEY) === "on", { persist: false });
 startClock();
 await loadAccounts();
+await initNotifications();
 await refreshUsage();
 let refreshTimer = setInterval(refreshUsage, 60_000);
 let countdownTimer = setInterval(render, 30_000); // re-render countdowns

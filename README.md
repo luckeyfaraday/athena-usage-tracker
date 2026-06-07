@@ -236,6 +236,8 @@ Then open the URL Tailscale prints (it looks like `https://<your-machine>.<your-
 
 Because the app stays bound to loopback, nothing is reachable except through Tailscale's encrypted, identity-checked proxy.
 
+Mobile usage alerts use browser Web Push, so open the dashboard through the HTTPS `tailscale serve` URL before enabling **Alerts**. The server stores private VAPID keys and device subscriptions in `data/notifications.json`, which is intentionally ignored by git.
+
 ### Option B — bind directly to your Tailscale interface
 
 If you prefer to hit the machine's Tailscale IP and port directly, set `HOST` so the server listens on that interface:
@@ -250,7 +252,7 @@ HOST=100.x.y.z npm start
 
 Then browse to `http://<tailscale-ip>:8080` (or your `<machine>.<tailnet>.ts.net` name) from another tailnet device. `HOST` combines with `PORT`, so `HOST=0.0.0.0 PORT=8090 npm start` works too.
 
-When `HOST` is set to anything other than loopback, the server prints a reminder that it is reachable from other devices. Prefer Option A, or pair Option B with Tailscale ACLs / a host firewall so only trusted devices can connect.
+When `HOST` is set to anything other than loopback, the server prints a reminder that it is reachable from other devices. Prefer Option A, or pair Option B with Tailscale ACLs / a host firewall so only trusted devices can connect. Direct HTTP access is useful for checking the dashboard, but most mobile browsers will not allow push notifications from it.
 
 ## Codex Account Setup
 

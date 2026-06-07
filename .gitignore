@@ -1,5 +1,6 @@
 node_modules/
 data/accounts.json
+data/notifications.json
 .env
 .env.*
 !.env.example
