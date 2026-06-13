@@ -181,6 +181,23 @@ function codexLoginCommand(codexHome) {
   return `CODEX_HOME=${shellQuote(codexHome)} codex login --device-auth`;
 }
 
+function claudeLoginCommand(claudeHome) {
+  if (process.platform === "win32") {
+    return `set "CLAUDE_CONFIG_DIR=${claudeHome}" && claude auth login`;
+  }
+  return `CLAUDE_CONFIG_DIR=${shellQuote(claudeHome)} claude auth login`;
+}
+
+function claudeEnv(claudeHome, extra = {}) {
+  return { ...process.env, CLAUDE_CONFIG_DIR: claudeHome, ...extra };
+}
+
+function claudeLoginArgs(account) {
+  const args = ["auth", "login", "--claudeai"];
+  if (account.expectedEmail) args.push("--email", account.expectedEmail);
+  return args;
+}
+
 async function copySharedCodexLogin(sourceHome, targetHome) {
   await mkdir(targetHome, { recursive: true, mode: 0o700 });
   const sourceAuth = path.join(sourceHome, "auth.json");
@@ -346,7 +363,7 @@ async function queryCodexAccount(account) {
 async function queryClaudeAccount(account) {
   const claudeHome = normalizeCodexHome(account.claudeHome || path.join(os.homedir(), ".claude"));
   const credentialsPath = path.join(claudeHome, ".credentials.json");
-  const loginCommand = "claude auth login";
+  const loginCommand = claudeLoginCommand(claudeHome);
 
   if (!existsSync(claudeHome)) {
     return {
@@ -370,7 +387,7 @@ async function queryClaudeAccount(account) {
   }
 
   try {
-    const [credentials, status] = await Promise.all([readClaudeCredentials(credentialsPath), readClaudeAuthStatus()]);
+    const [credentials, status] = await Promise.all([readClaudeCredentials(credentialsPath), readClaudeAuthStatus(claudeHome)]);
     const email = status.email || account.expectedEmail || null;
     if (account.expectedEmail && email && account.expectedEmail !== email) {
       return {
@@ -415,7 +432,7 @@ function buildClaudeUsageAccount(account, claudeHome, credentials, status, usage
       ...(usage?.model ? { model: usage.model } : {}),
       ...(usage?.contextWindow ? { contextWindow: usage.contextWindow } : {}),
     },
-    loginCommand: "claude auth login",
+    loginCommand: claudeLoginCommand(claudeHome),
   };
 
   const rateLimits = usage?.rateLimits || null;
@@ -449,7 +466,7 @@ async function syncClaudeUsageAccount(account) {
 
   const [credentials, status] = await Promise.all([
     readClaudeCredentials(credentialsPath),
-    readClaudeAuthStatus(),
+    readClaudeAuthStatus(claudeHome),
   ]);
 
   const email = status.email || account.expectedEmail || null;
@@ -459,7 +476,7 @@ async function syncClaudeUsageAccount(account) {
 
   let usage;
   try {
-    usage = await runClaudeStatuslineProbe();
+    usage = await runClaudeStatuslineProbe(claudeHome);
   } catch (error) {
     if (!(error instanceof ClaudeSyncUnavailableError)) throw error;
     const fallback = account.claudeUsage || null;
@@ -478,6 +495,26 @@ async function syncClaudeUsageAccount(account) {
 
   const nextAccount = { ...account, claudeUsage: usage };
   return buildClaudeUsageAccount(nextAccount, claudeHome, credentials, status, usage);
+}
+
+async function loginClaudeAccount(account) {
+  if (account.provider !== "claude") throw new Error("Account is not a Claude Code account");
+
+  const claudeHome = normalizeCodexHome(account.claudeHome || path.join(os.homedir(), ".claude"));
+  await mkdir(claudeHome, { recursive: true, mode: 0o700 });
+
+  const credentialsPath = path.join(claudeHome, ".credentials.json");
+  const existingStatus = await readClaudeAuthStatus(claudeHome).catch(() => null);
+  if (existingStatus?.loggedIn && existsSync(credentialsPath)) {
+    return queryClaudeAccount({ ...account, claudeHome });
+  }
+
+  await runClaudeAuthLogin({ ...account, claudeHome });
+  const result = await queryClaudeAccount({ ...account, claudeHome });
+  if (result.status === "missing_home" || result.status === "not_logged_in") {
+    throw new Error("Claude login finished, but no credentials were written. Start login again from the dashboard to create a fresh browser callback.");
+  }
+  return result;
 }
 
 async function queryOpenRouterAccount(account) {
@@ -939,7 +976,7 @@ function numberOrNull(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-async function runClaudeStatuslineProbe() {
+async function runClaudeStatuslineProbe(claudeHome) {
   if (!existsSync(CLAUDE_STATUSLINE_CAPTURE)) {
     throw new Error(`Claude status-line capture helper is missing: ${CLAUDE_STATUSLINE_CAPTURE}`);
   }
@@ -955,7 +992,7 @@ async function runClaudeStatuslineProbe() {
     },
   });
 
-  const probe = spawnClaudeStatuslineProbe(settingsPath);
+  const probe = spawnClaudeStatuslineProbe(settingsPath, claudeHome);
   const child = probe.child;
 
   let stdout = "";
@@ -1064,13 +1101,14 @@ function statuslineCaptureCommand(capturePath) {
   return `${shellQuote(process.execPath)} ${shellQuote(CLAUDE_STATUSLINE_CAPTURE)} ${shellQuote(capturePath)}`;
 }
 
-function spawnClaudeStatuslineProbe(settingsPath) {
+function spawnClaudeStatuslineProbe(settingsPath, claudeHome) {
+  const env = claudeEnv(claudeHome, { TERM: process.env.TERM || "xterm-256color" });
   if (process.platform === "win32") {
     const args = ["--settings", settingsPath, "--model", "haiku", "--effort", "low", "Reply with only: ok"];
     const claude = resolveClaudeCommand(args);
     const child = spawn("powershell.exe", ["-NoProfile", "-Command", startProcessCommand(claude.command, claude.args)], {
       cwd: __dirname,
-      env: { ...process.env, TERM: process.env.TERM || "xterm-256color" },
+      env,
       stdio: ["ignore", "pipe", "pipe"],
     });
     return { child, sendsInput: false, exitIsFatal: true };
@@ -1080,7 +1118,7 @@ function spawnClaudeStatuslineProbe(settingsPath) {
   const command = `claude --settings ${shellQuote(settingsPath)} --model haiku --effort low`;
   const child = spawn("script", ["-qfec", command, "/dev/null"], {
     cwd: __dirname,
-    env: { ...process.env, TERM: process.env.TERM || "xterm-256color" },
+    env,
     stdio: ["pipe", "pipe", "pipe"],
   });
   return { child, sendsInput: true, exitIsFatal: true };
@@ -1206,11 +1244,12 @@ function windowsShellQuote(value) {
   return `"${String(value).replace(/"/g, '\\"')}"`;
 }
 
-function readClaudeAuthStatus() {
+function readClaudeAuthStatus(claudeHome) {
   return new Promise((resolve, reject) => {
     const claude = resolveClaudeCommand(["auth", "status", "--json"]);
     const child = spawn(claude.command, claude.args, {
       cwd: __dirname,
+      env: claudeEnv(claudeHome),
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -1242,6 +1281,60 @@ function readClaudeAuthStatus() {
       }
     });
   });
+}
+
+function runClaudeAuthLogin(account) {
+  const claudeHome = normalizeCodexHome(account.claudeHome || path.join(os.homedir(), ".claude"));
+  return new Promise((resolve, reject) => {
+    const claude = resolveClaudeCommand(claudeLoginArgs(account));
+    const child = spawn(claude.command, claude.args, {
+      cwd: __dirname,
+      env: claudeEnv(claudeHome, { TERM: process.env.TERM || "xterm-256color" }),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      finish(new Error("Claude login did not finish within five minutes. Start login again from the dashboard so Claude creates a fresh browser callback."));
+    }, 300_000);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (error) => {
+      finish(error);
+    });
+    child.on("exit", (code) => {
+      if (code === 0) finish(null);
+      else finish(new Error(formatClaudeLoginFailure(code, stdout, stderr)));
+    });
+
+    function finish(error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve();
+    }
+  });
+}
+
+function formatClaudeLoginFailure(code, stdout, stderr) {
+  const output = stripAnsi([stderr.trim(), stdout.trim()].filter(Boolean).join("\n"))
+    .replace(/https?:\/\/\S+/g, "[login URL]")
+    .slice(0, 700)
+    .trim();
+  if (!output) return `Claude login exited with code ${code}`;
+  return `Claude login failed: ${output}`;
+}
+
+function stripAnsi(value) {
+  return String(value || "").replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
 function applyManualOverride(account) {
@@ -1529,6 +1622,8 @@ async function handleApi(req, res) {
         await copySharedCodexLogin(sourceCodexHome, account.codexHome);
         account.importedFromSharedCodexHome = true;
       }
+    } else if (account.provider === "claude") {
+      await mkdir(account.claudeHome, { recursive: true, mode: 0o700 });
     }
     await writeAccounts(accounts);
     invalidateUsageCache();
@@ -1553,7 +1648,7 @@ async function handleApi(req, res) {
       return;
     }
     const result = account.provider === "claude"
-      ? await testClaudeAccount()
+      ? await testClaudeAccount(account)
       : account.provider === "openrouter"
         ? await testOpenRouterAccount(account)
         : await testCodexAccount(account);
@@ -1595,17 +1690,41 @@ async function handleApi(req, res) {
     return;
   }
 
+  if (req.method === "POST" && url.pathname.endsWith("/claude/login")) {
+    const id = decodeURIComponent(url.pathname.split("/").at(-3) || "");
+    const accounts = await readAccounts();
+    const index = accounts.findIndex((item) => item.id === id);
+    if (index === -1) {
+      sendJson(res, 404, { error: "Account not found" });
+      return;
+    }
+    if (accounts[index].provider !== "claude") {
+      sendJson(res, 400, { error: "Account is not a Claude Code account" });
+      return;
+    }
+    const usage = await loginClaudeAccount(accounts[index]);
+    accounts[index] = {
+      ...accounts[index],
+      claudeHome: usage.claudeHome || accounts[index].claudeHome,
+    };
+    await writeAccounts(accounts);
+    invalidateUsageCache(id);
+    sendJson(res, 200, { usage });
+    return;
+  }
+
   sendJson(res, 404, { error: "Not found" });
 }
 
-async function testClaudeAccount() {
+async function testClaudeAccount(account) {
+  const claudeHome = normalizeCodexHome(account.claudeHome || path.join(os.homedir(), ".claude"));
   try {
-    const status = await readClaudeAuthStatus();
+    const status = await readClaudeAuthStatus(claudeHome);
     return {
       ok: Boolean(status.loggedIn),
       stdout: status.loggedIn
-        ? `Claude logged in as ${status.email || "unknown"} (${status.subscriptionType || "unknown plan"})`
-        : "Claude is not logged in",
+        ? `Claude logged in as ${status.email || "unknown"} (${status.subscriptionType || "unknown plan"}) using ${claudeHome}`
+        : `Claude is not logged in using ${claudeHome}`,
     };
   } catch (error) {
     return { ok: false, error: error.message, stdout: "", stderr: "" };

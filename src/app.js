@@ -264,7 +264,9 @@ function renderFocus(accounts) {
       <div class="focus-actions">
         ${
           account.provider === "claude"
-            ? `<button class="btn ghost" data-action="sync-claude">Sync usage</button>`
+            ? canStartClaudeLogin(account)
+              ? `<button class="btn solid" data-action="login-claude">Start login</button>`
+              : `<button class="btn ghost" data-action="sync-claude">Sync usage</button>`
             : ""
         }
         <button class="btn ghost" data-action="test">Run test</button>
@@ -277,6 +279,9 @@ function renderFocus(accounts) {
 
   const syncClaude = wrapper.querySelector('[data-action="sync-claude"]');
   if (syncClaude) syncClaude.addEventListener("click", () => syncClaudeUsage(account));
+  wrapper.querySelectorAll('[data-action="login-claude"]').forEach((node) => {
+    node.addEventListener("click", () => loginClaudeAccount(account));
+  });
   wrapper.querySelector('[data-action="test"]').addEventListener("click", () => testAccount(account));
   wrapper.querySelector('[data-action="delete"]').addEventListener("click", () => deleteAccount(account));
   wrapper.querySelectorAll("[data-copy]").forEach((node) => {
@@ -632,6 +637,22 @@ function renderAlert(account) {
           <h3 class="alert-title">Issue</h3>
         </div>
         <p class="alert-msg">${escapeHtml(account.error || "Unknown error")}</p>
+      </div>
+    `;
+  }
+
+  if (account.provider === "claude") {
+    return `
+      <div class="alert ${account.status === "wrong_account" || account.status === "error" ? "is-danger" : "is-warn"}">
+        <div class="alert-head">
+          <h3 class="alert-title">Claude login needed</h3>
+          <span style="font-family: var(--font-mono); font-size: 10px; color: var(--ink-mute); letter-spacing: 0.18em; text-transform: uppercase;">${escapeHtml(account.status.replace(/_/g, " "))}</span>
+        </div>
+        ${account.error ? `<p class="alert-msg">${escapeHtml(account.error)}</p>` : ""}
+        <div class="alert-actions">
+          <button class="btn solid" type="button" data-action="login-claude">Start Claude login</button>
+          <span>Keep this dashboard open; it will refresh when Claude finishes.</span>
+        </div>
       </div>
     `;
   }
@@ -993,6 +1014,19 @@ function looksLikeSharedCodexHome(value) {
   return path === "~/.codex" || path.endsWith("/.codex");
 }
 
+function canStartClaudeLogin(account) {
+  return account.provider === "claude" && ["missing_home", "not_logged_in", "wrong_account", "error"].includes(account.status);
+}
+
+function mergeUsage(usage) {
+  const items = Array.isArray(usage) ? usage : usage ? [usage] : [];
+  const map = new Map(state.usage.map((item) => [item.id, item]));
+  for (const item of items) map.set(item.id, item);
+  state.usage = Array.from(map.values());
+  state.lastRefresh = new Date();
+  render();
+}
+
 /* ── ACTIONS ────────────────────────────────────────────── */
 
 async function testAccount(account) {
@@ -1013,6 +1047,31 @@ async function testAccount(account) {
   }
 }
 
+async function loginClaudeAccount(account) {
+  const buttons = Array.from(els.focusPanel.querySelectorAll('[data-action="login-claude"]'));
+  buttons.forEach((button) => {
+    button.disabled = true;
+    button.classList.add("is-loading");
+  });
+  toast("Complete Claude login in the browser");
+  try {
+    const { usage } = await api(`/api/accounts/${encodeURIComponent(account.id)}/claude/login`, {
+      method: "POST",
+    });
+    state.selectedId = account.id;
+    mergeUsage(usage);
+    const status = statusMeta(usage);
+    toast(status.tone === "danger" ? status.label : "Claude login connected", status.tone === "danger" ? "error" : "ok");
+  } catch (error) {
+    toast(error.message || "Claude login failed", "error");
+  } finally {
+    buttons.forEach((button) => {
+      button.disabled = false;
+      button.classList.remove("is-loading");
+    });
+  }
+}
+
 async function syncClaudeUsage(account) {
   const button = els.focusPanel.querySelector('[data-action="sync-claude"]');
   if (!button) return;
@@ -1023,10 +1082,9 @@ async function syncClaudeUsage(account) {
     const { usage } = await api(`/api/accounts/${encodeURIComponent(account.id)}/claude/sync`, {
       method: "POST",
     });
-    state.usage = state.usage.filter((item) => item.id !== account.id).concat(usage);
-    state.lastRefresh = new Date();
+    state.selectedId = account.id;
+    mergeUsage(usage);
     toast(usage.syncWarning || "Claude usage synced", usage.syncWarning ? "warn" : "ok");
-    render();
   } catch (error) {
     toast(error.message, "error");
   } finally {
@@ -1051,8 +1109,9 @@ async function deleteAccount(account) {
 
 function openAddDialog() {
   els.form.reset();
+  const nextClaudeNumber = state.accounts.filter((account) => account.provider === "claude").length + 1;
   els.codexHome.value = "~/.codex-accounts/account2";
-  els.claudeHome.value = "";
+  els.claudeHome.value = nextClaudeNumber > 1 ? `~/.claude-accounts/account${nextClaudeNumber}` : "";
   els.openrouterKeyEnv.value = "";
   els.openrouterUsageLog.value = "";
   els.expectedEmail.value = "";

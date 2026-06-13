@@ -25,6 +25,14 @@
       "enabled": true
     },
     {
+      "id": "claude-backup",
+      "name": "Backup Claude Code",
+      "provider": "claude",
+      "claudeHome": "/home/you/.claude-accounts/account2",
+      "expectedEmail": "second-claude-account@example.com",
+      "enabled": true
+    },
+    {
       "id": "openrouter",
       "name": "OpenRouter",
       "provider": "openrouter",

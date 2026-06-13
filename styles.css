@@ -1062,6 +1062,21 @@ body {
   line-height: 1.5;
 }
 
+.alert-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.alert-actions span {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--ink-mute);
+}
+
 .command {
   display: grid;
   grid-template-columns: 1fr auto;

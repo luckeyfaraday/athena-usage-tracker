@@ -207,6 +207,12 @@ function renderFocus() {
   els.copyLaunch.hidden = isClaude || isOpenRouter;
   els.copyLaunch.disabled = !isClaude && !isOpenRouter && !account.codexHome;
   els.syncClaude.hidden = !isClaude;
+  if (isClaude) {
+    const loginMode = canStartClaudeLogin(account);
+    els.syncClaude.dataset.mode = loginMode ? "login" : "sync";
+    const label = els.syncClaude.querySelector("span");
+    if (label) label.textContent = loginMode ? "Start login" : "Sync usage";
+  }
 }
 
 function renderLedger() {
@@ -247,6 +253,7 @@ function renderLedger() {
           <span class="row-name">${escapeHtml(account.name || "Account")}</span>
           <span class="row-pct">${escapeHtml(pctText)}</span>
         </div>
+        <div class="row-meta">${escapeHtml(accountMeta(account))}</div>
         <div class="row-bar">
           <div class="row-bar-fill ${isOpenRouter ? "is-muted" : barTone}" style="--pct: ${isOpenRouter ? 0 : clampPct(pct ?? 0)}%"></div>
         </div>
@@ -347,6 +354,8 @@ function statusTone(account) {
   if (account.rateLimits?.limitReached === true || account.rateLimits?.allowed === false) return "danger";
   if (account.status === "metadata_only") return "warn";
   if (account.status === "missing_home") return "warn";
+  if (account.status === "not_logged_in") return "warn";
+  if (account.status === "manual_lockout") return "warn";
   return "danger";
 }
 
@@ -361,6 +370,27 @@ function statusLabel(account) {
   if (account.status === "missing_home") return "Home missing";
   if (account.status === "error") return "Error";
   return account.status || "Pending";
+}
+
+function providerLabel(account) {
+  if (account.provider === "claude") return "Claude";
+  if (account.provider === "openrouter") return "OpenRouter";
+  return "Codex";
+}
+
+function accountMeta(account) {
+  const identity =
+    displayEmail(account.email) ||
+    displayEmail(account.expectedEmail) ||
+    account.claudeHome ||
+    account.codexHome ||
+    account.openrouterKeyEnv ||
+    "not configured";
+  return `${providerLabel(account)} · ${statusLabel(account)} · ${identity}`;
+}
+
+function canStartClaudeLogin(account) {
+  return account.provider === "claude" && ["missing_home", "not_logged_in", "wrong_account", "error"].includes(account.status);
 }
 
 function windowLabel(primary) {
@@ -415,23 +445,51 @@ function toast(message, kind = "") {
   }, 2400);
 }
 
+function mergeUsage(usage, selectedId) {
+  const fresh = Array.isArray(usage) ? usage : usage ? [usage] : [];
+  const map = new Map(state.usage.map((item) => [item.id, item]));
+  for (const item of fresh) map.set(item.id, item);
+  state.usage = Array.from(map.values());
+  state.selected = selectedId ? map.get(selectedId) || state.selected : pickFocus(state.usage, state.selected);
+  state.updatedAt = new Date();
+  render();
+}
+
+async function loginClaudeAccount() {
+  const account = state.selected;
+  if (!account || account.provider !== "claude") return;
+  els.syncClaude.disabled = true;
+  els.syncClaude.classList.add("is-loading");
+  toast("Complete Claude login in the browser");
+  try {
+    const { usage } = await api(`/api/accounts/${encodeURIComponent(account.id)}/claude/login`, {
+      method: "POST",
+    });
+    mergeUsage(usage, account.id);
+    toast("Claude login connected", "ok");
+  } catch (error) {
+    toast(error.message || "Claude login failed", "error");
+  } finally {
+    els.syncClaude.disabled = false;
+    els.syncClaude.classList.remove("is-loading");
+  }
+}
+
 async function syncClaudeUsage() {
   const account = state.selected;
   if (!account || account.provider !== "claude") return;
+  if (canStartClaudeLogin(account)) {
+    await loginClaudeAccount();
+    return;
+  }
   els.syncClaude.disabled = true;
   els.syncClaude.classList.add("is-loading");
   try {
     const { usage } = await api(`/api/accounts/${encodeURIComponent(account.id)}/claude/sync`, {
       method: "POST",
     });
-    const fresh = Array.isArray(usage) ? usage : usage ? [usage] : [];
-    const map = new Map(state.usage.map((item) => [item.id, item]));
-    for (const item of fresh) map.set(item.id, item);
-    state.usage = Array.from(map.values());
-    state.selected = map.get(account.id) || state.selected;
-    state.updatedAt = new Date();
+    mergeUsage(usage, account.id);
     toast(usage.syncWarning || "Claude usage synced", usage.syncWarning ? "warn" : "ok");
-    render();
   } catch (error) {
     toast(error.message || "Sync failed", "error");
   } finally {
