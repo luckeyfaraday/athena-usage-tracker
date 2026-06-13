@@ -625,6 +625,18 @@ svg { display: block; fill: none; stroke: currentColor; }
   white-space: nowrap;
 }
 
+.account-row .row-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+
 .account-row .row-pct {
   font-family: var(--font-mono);
   font-size: 11px;

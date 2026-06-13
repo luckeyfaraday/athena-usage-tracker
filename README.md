@@ -326,16 +326,26 @@ The dashboard shows a copyable launch command for each Codex account so switchin
 
 ## Claude Code Setup
 
-Log into Claude Code normally:
-
-```bash
-claude auth login
-```
-
-Then add a Claude account in the dashboard. Leave the Claude config path blank to use:
+Add a Claude account in the dashboard. Leave the Claude config path blank for the primary Claude Code login, or set it to:
 
 ```bash
 ~/.claude
+```
+
+If the row says `Awaiting login`, click `Start Claude login`. The tracker starts Claude Code with the right `CLAUDE_CONFIG_DIR`, opens the browser auth flow, waits for Claude to finish, and refreshes the account automatically.
+
+For each additional Claude subscription, use a separate Claude config directory in the dashboard:
+
+```bash
+~/.claude-accounts/account2
+```
+
+The tracker creates the directory and launches login for that account when you click `Start Claude login`.
+
+To run Claude Code with that subscription later:
+
+```bash
+CLAUDE_CONFIG_DIR=~/.claude-accounts/account2 claude
 ```
 
 Click `Sync usage` when you want the tracker to run the status-line capture and update Claude usage windows.
@@ -363,6 +373,14 @@ Example:
       "provider": "claude",
       "claudeHome": "/home/you/.claude",
       "expectedEmail": "claude-account@example.com",
+      "enabled": true
+    },
+    {
+      "id": "claude-backup",
+      "name": "Backup Claude Code",
+      "provider": "claude",
+      "claudeHome": "/home/you/.claude-accounts/account2",
+      "expectedEmail": "second-claude-account@example.com",
       "enabled": true
     }
   ]
