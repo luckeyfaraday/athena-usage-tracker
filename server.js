@@ -181,15 +181,63 @@ function codexLoginCommand(codexHome) {
   return `CODEX_HOME=${shellQuote(codexHome)} codex login --device-auth`;
 }
 
+function isDefaultClaudeHome(claudeHome) {
+  return normalizeCodexHome(claudeHome) === path.join(os.homedir(), ".claude");
+}
+
 function claudeLoginCommand(claudeHome) {
+  if (isDefaultClaudeHome(claudeHome)) return "claude auth login";
   if (process.platform === "win32") {
     return `set "CLAUDE_CONFIG_DIR=${claudeHome}" && claude auth login`;
   }
   return `CLAUDE_CONFIG_DIR=${shellQuote(claudeHome)} claude auth login`;
 }
 
+// Only override CLAUDE_CONFIG_DIR for dedicated (non-default) homes. Forcing it
+// onto the default ~/.claude makes Claude read config from ~/.claude/.claude.json
+// instead of the real ~/.claude.json, which loses onboarding/trust state and
+// drops every command into the first-run wizard (breaking the sync probe).
 function claudeEnv(claudeHome, extra = {}) {
-  return { ...process.env, CLAUDE_CONFIG_DIR: claudeHome, ...extra };
+  if (claudeHome && !isDefaultClaudeHome(claudeHome)) {
+    return { ...process.env, CLAUDE_CONFIG_DIR: claudeHome, ...extra };
+  }
+  return { ...process.env, ...extra };
+}
+
+// A dedicated Claude home starts with an empty $CLAUDE_CONFIG_DIR/.claude.json,
+// so the first interactive command (sync probe or login) drops into the welcome
+// /theme/trust wizard and hangs. Seed the config so onboarding is already done
+// and the directory we run commands from is trusted. Merge-safe: only fills in
+// missing keys, never overwrites an existing config the user may rely on.
+async function ensureClaudeOnboarding(claudeHome) {
+  if (!claudeHome || isDefaultClaudeHome(claudeHome)) return;
+  await mkdir(claudeHome, { recursive: true, mode: 0o700 });
+
+  const configPath = path.join(claudeHome, ".claude.json");
+  let config = {};
+  if (existsSync(configPath)) {
+    try {
+      config = JSON.parse(await readFile(configPath, "utf8")) || {};
+    } catch {
+      return; // leave an unparseable user config untouched
+    }
+  }
+
+  let changed = false;
+  if (config.hasCompletedOnboarding !== true) {
+    config.hasCompletedOnboarding = true;
+    changed = true;
+  }
+  const projects = config.projects && typeof config.projects === "object" ? config.projects : (config.projects = {});
+  const project = projects[__dirname] && typeof projects[__dirname] === "object" ? projects[__dirname] : (projects[__dirname] = {});
+  if (project.hasTrustDialogAccepted !== true) {
+    project.hasTrustDialogAccepted = true;
+    changed = true;
+  }
+
+  if (changed) {
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  }
 }
 
 function claudeLoginArgs(account) {
@@ -501,7 +549,7 @@ async function loginClaudeAccount(account) {
   if (account.provider !== "claude") throw new Error("Account is not a Claude Code account");
 
   const claudeHome = normalizeCodexHome(account.claudeHome || path.join(os.homedir(), ".claude"));
-  await mkdir(claudeHome, { recursive: true, mode: 0o700 });
+  await ensureClaudeOnboarding(claudeHome);
 
   const credentialsPath = path.join(claudeHome, ".credentials.json");
   const existingStatus = await readClaudeAuthStatus(claudeHome).catch(() => null);
@@ -980,6 +1028,8 @@ async function runClaudeStatuslineProbe(claudeHome) {
   if (!existsSync(CLAUDE_STATUSLINE_CAPTURE)) {
     throw new Error(`Claude status-line capture helper is missing: ${CLAUDE_STATUSLINE_CAPTURE}`);
   }
+
+  await ensureClaudeOnboarding(claudeHome);
 
   const tempDir = path.join(os.tmpdir(), `athena-usage-tracker-claude-${randomUUID()}`);
   await mkdir(tempDir, { recursive: true, mode: 0o700 });
@@ -1624,6 +1674,7 @@ async function handleApi(req, res) {
       }
     } else if (account.provider === "claude") {
       await mkdir(account.claudeHome, { recursive: true, mode: 0o700 });
+      await ensureClaudeOnboarding(account.claudeHome);
     }
     await writeAccounts(accounts);
     invalidateUsageCache();
