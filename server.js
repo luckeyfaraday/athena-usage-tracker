@@ -181,15 +181,27 @@ function codexLoginCommand(codexHome) {
   return `CODEX_HOME=${shellQuote(codexHome)} codex login --device-auth`;
 }
 
+function isDefaultClaudeHome(claudeHome) {
+  return normalizeCodexHome(claudeHome) === path.join(os.homedir(), ".claude");
+}
+
 function claudeLoginCommand(claudeHome) {
+  if (isDefaultClaudeHome(claudeHome)) return "claude auth login";
   if (process.platform === "win32") {
     return `set "CLAUDE_CONFIG_DIR=${claudeHome}" && claude auth login`;
   }
   return `CLAUDE_CONFIG_DIR=${shellQuote(claudeHome)} claude auth login`;
 }
 
+// Only override CLAUDE_CONFIG_DIR for dedicated (non-default) homes. Forcing it
+// onto the default ~/.claude makes Claude read config from ~/.claude/.claude.json
+// instead of the real ~/.claude.json, which loses onboarding/trust state and
+// drops every command into the first-run wizard (breaking the sync probe).
 function claudeEnv(claudeHome, extra = {}) {
-  return { ...process.env, CLAUDE_CONFIG_DIR: claudeHome, ...extra };
+  if (claudeHome && !isDefaultClaudeHome(claudeHome)) {
+    return { ...process.env, CLAUDE_CONFIG_DIR: claudeHome, ...extra };
+  }
+  return { ...process.env, ...extra };
 }
 
 function claudeLoginArgs(account) {
