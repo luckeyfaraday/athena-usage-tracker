@@ -1364,7 +1364,6 @@ async function queryDirectUsage(codexHome) {
   let response = await fetchUsage(accessToken, accountId);
   if (response.status === 401 || response.status === 403) {
     accessToken = await refreshAccessToken(auth);
-    auth.tokens.access_token = accessToken;
     await writeFile(authPath, `${JSON.stringify(auth, null, 2)}\n`);
     response = await fetchUsage(accessToken, accountId);
   }
@@ -1453,6 +1452,18 @@ async function refreshAccessToken(auth) {
     throw new Error(`Token refresh failed: ${response.status}`);
   }
   const result = await response.json();
+  if (!result.access_token) throw new Error("Token refresh response missing access_token");
+  // ChatGPT rotates the refresh token on every grant and invalidates the old one,
+  // so we must persist the new refresh_token/id_token back into auth.json. Keeping
+  // the stale refresh token poisons the file and locks the account out with a 401
+  // token_invalidated on the next refresh. Mutates auth in place; caller writes it.
+  auth.tokens = {
+    ...auth.tokens,
+    access_token: result.access_token,
+    ...(result.refresh_token ? { refresh_token: result.refresh_token } : {}),
+    ...(result.id_token ? { id_token: result.id_token } : {}),
+  };
+  auth.last_refresh = new Date().toISOString();
   return result.access_token;
 }
 
