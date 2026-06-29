@@ -258,7 +258,21 @@ Each Codex subscription needs a dedicated `CODEX_HOME`. Do not track `~/.codex` 
 
 If you add `~/.codex`, the tracker treats it as an import source: it copies the current login into a dedicated `~/.codex-accounts/...` home and tracks that stable path instead. That keeps unrelated Codex logout/login activity from mutating the dashboard account.
 
-Create and log into the first account on macOS or Linux:
+The dashboard can start Codex login for each account home. Add a Codex account with a dedicated path such as:
+
+```bash
+~/.codex-accounts/account1
+```
+
+If the row says `Awaiting login`, `Home missing`, or the session was invalidated, click `Start login`. The tracker creates the directory, starts:
+
+```bash
+CODEX_HOME=~/.codex-accounts/account1 codex login --device-auth
+```
+
+It then shows the device URL and one-time code, polls for completion, and refreshes the account automatically after Codex writes `auth.json`.
+
+You can still log in manually if you prefer. On macOS or Linux:
 
 ```bash
 mkdir -p ~/.codex-accounts/account1
@@ -280,7 +294,13 @@ New-Item -ItemType Directory -Force "$env:USERPROFILE\.codex-accounts\account1"
 $env:CODEX_HOME="$env:USERPROFILE\.codex-accounts\account1"; codex login --device-auth
 ```
 
-Create and log into a second account on macOS or Linux:
+Create another account by using another home, then click `Start login` on that row:
+
+```bash
+~/.codex-accounts/account2
+```
+
+Manual macOS/Linux login for that second home:
 
 ```bash
 mkdir -p ~/.codex-accounts/account2
@@ -288,14 +308,14 @@ chmod 700 ~/.codex-accounts/account2
 CODEX_HOME=~/.codex-accounts/account2 codex login --device-auth
 ```
 
-On Windows `cmd.exe`:
+Manual Windows `cmd.exe` login for that second home:
 
 ```bat
 mkdir "%USERPROFILE%\.codex-accounts\account2"
 set "CODEX_HOME=%USERPROFILE%\.codex-accounts\account2" && codex login --device-auth
 ```
 
-On Windows PowerShell:
+Manual Windows PowerShell login for that second home:
 
 ```powershell
 New-Item -ItemType Directory -Force "$env:USERPROFILE\.codex-accounts\account2"
