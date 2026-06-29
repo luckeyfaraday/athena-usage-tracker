@@ -4,6 +4,7 @@ const state = {
   selectedId: null,
   loading: false,
   lastRefresh: null,
+  codexLogins: new Map(),
 };
 
 const els = {
@@ -34,6 +35,7 @@ const els = {
 };
 
 const PRIVACY_KEY = "athena.privacy";
+const codexLoginPolls = new Map();
 let privacyMode = false;
 
 const icons = {
@@ -279,6 +281,9 @@ function renderFocus(accounts) {
 
   const syncClaude = wrapper.querySelector('[data-action="sync-claude"]');
   if (syncClaude) syncClaude.addEventListener("click", () => syncClaudeUsage(account));
+  wrapper.querySelectorAll('[data-action="login-codex"]').forEach((node) => {
+    node.addEventListener("click", () => loginCodexAccount(account));
+  });
   wrapper.querySelectorAll('[data-action="login-claude"]').forEach((node) => {
     node.addEventListener("click", () => loginClaudeAccount(account));
   });
@@ -596,6 +601,11 @@ function renderDial(progress, _label) {
 }
 
 function renderAlert(account) {
+  const codexLogin = account.provider === "codex" ? state.codexLogins.get(account.id) : null;
+  if (codexLogin && !["complete", "error", "expired"].includes(codexLogin.status)) {
+    return renderCodexLoginAlert(codexLogin);
+  }
+
   if (account.status === "ok" && account.sourceWarning) {
     return `
       <div class="alert is-warn">
@@ -657,6 +667,22 @@ function renderAlert(account) {
     `;
   }
 
+  if (account.provider === "codex") {
+    return `
+      <div class="alert ${account.status === "wrong_account" || account.status === "error" ? "is-danger" : "is-warn"}">
+        <div class="alert-head">
+          <h3 class="alert-title">Codex login needed</h3>
+          <span style="font-family: var(--font-mono); font-size: 10px; color: var(--ink-mute); letter-spacing: 0.18em; text-transform: uppercase;">${escapeHtml(account.status.replace(/_/g, " "))}</span>
+        </div>
+        ${account.error ? `<p class="alert-msg">${escapeHtml(account.error)}</p>` : ""}
+        <div class="alert-actions">
+          <button class="btn solid" type="button" data-action="login-codex">Start Codex login</button>
+          <span>Reconnects ${escapeHtml(account.codexHome || "this account home")}.</span>
+        </div>
+      </div>
+    `;
+  }
+
   return `
     <div class="alert ${account.status === "wrong_account" || account.status === "error" ? "is-danger" : "is-warn"}">
       <div class="alert-head">
@@ -672,8 +698,39 @@ function renderAlert(account) {
   `;
 }
 
+function renderCodexLoginAlert(session) {
+  const code = session.userCode || "Waiting for code";
+  const status = session.status === "starting" ? "Starting login" : "Waiting for browser";
+  return `
+    <div class="alert is-warn login-panel">
+      <div class="alert-head">
+        <h3 class="alert-title">Codex login in progress</h3>
+        <span style="font-family: var(--font-mono); font-size: 10px; color: var(--ink-mute); letter-spacing: 0.18em; text-transform: uppercase;">${escapeHtml(status)}</span>
+      </div>
+      <p class="alert-msg">Open the Codex device page and enter the one-time code for this account home.</p>
+      <div class="login-code">
+        <code>${escapeHtml(code)}</code>
+        ${
+          session.userCode
+            ? `<button class="command-copy" type="button" data-copy="${escapeHtml(session.userCode)}">Copy code</button>`
+            : ""
+        }
+      </div>
+      <div class="alert-actions">
+        ${
+          session.loginUrl
+            ? `<a class="btn solid" href="${escapeHtml(session.loginUrl)}" target="_blank" rel="noreferrer">Open login</a>`
+            : `<button class="btn solid" type="button" disabled>Starting</button>`
+        }
+        <span>${session.expiresAt ? `Expires ${formatDateTime(session.expiresAt)}` : "Keep this dashboard open."}</span>
+      </div>
+    </div>
+  `;
+}
+
 function renderAccountHandoff(account) {
   if (account.provider !== "codex" || !account.codexHome) return "";
+  if (account.status !== "ok") return "";
   if (account.status === "shared_home" || looksLikeSharedCodexHome(account.codexHome)) return "";
 
   const launchCommand = `CODEX_HOME=${shellQuote(account.codexHome)} codex`;
@@ -1018,6 +1075,10 @@ function canStartClaudeLogin(account) {
   return account.provider === "claude" && ["missing_home", "not_logged_in", "wrong_account", "error"].includes(account.status);
 }
 
+function canStartCodexLogin(account) {
+  return account.provider === "codex" && ["missing_home", "not_logged_in", "wrong_account", "error"].includes(account.status);
+}
+
 function mergeUsage(usage) {
   const items = Array.isArray(usage) ? usage : usage ? [usage] : [];
   const map = new Map(state.usage.map((item) => [item.id, item]));
@@ -1045,6 +1106,84 @@ async function testAccount(account) {
     button.textContent = original;
     await refreshUsage();
   }
+}
+
+async function loginCodexAccount(account) {
+  const buttons = Array.from(els.focusPanel.querySelectorAll('[data-action="login-codex"]'));
+  let loginWindow = null;
+  buttons.forEach((button) => {
+    button.disabled = true;
+    button.classList.add("is-loading");
+  });
+  try {
+    loginWindow = window.open("about:blank", "_blank");
+  } catch {
+    loginWindow = null;
+  }
+  toast("Starting Codex login");
+  try {
+    const { session } = await api(`/api/accounts/${encodeURIComponent(account.id)}/codex/login`, {
+      method: "POST",
+    });
+    state.selectedId = account.id;
+    handleCodexLoginSession(session, loginWindow);
+    pollCodexLogin(account.id, session.id);
+  } catch (error) {
+    if (loginWindow) loginWindow.close();
+    toast(error.message || "Codex login failed", "error");
+  } finally {
+    buttons.forEach((button) => {
+      button.disabled = false;
+      button.classList.remove("is-loading");
+    });
+  }
+}
+
+function handleCodexLoginSession(session, loginWindow = null) {
+  if (!session) return;
+  const previous = state.codexLogins.get(session.accountId);
+  const firstCode = Boolean(session.userCode && previous?.userCode !== session.userCode);
+  state.codexLogins.set(session.accountId, session);
+  if (session.loginUrl && loginWindow) {
+    loginWindow.location.href = session.loginUrl;
+  } else if (loginWindow) {
+    loginWindow.close();
+  }
+  if (firstCode) {
+    navigator.clipboard?.writeText(session.userCode).catch(() => {});
+    toast(`Codex code copied: ${session.userCode}`, "ok");
+  }
+  if (session.status === "complete") {
+    codexLoginPolls.delete(session.accountId);
+    state.codexLogins.delete(session.accountId);
+    if (session.usage) mergeUsage(session.usage);
+    toast("Codex login connected", "ok");
+    return;
+  }
+  if (session.status === "error" || session.status === "expired") {
+    codexLoginPolls.delete(session.accountId);
+    toast(session.error || "Codex login failed", "error");
+  }
+  render();
+}
+
+function pollCodexLogin(accountId, sessionId) {
+  clearTimeout(codexLoginPolls.get(accountId));
+  const poll = async () => {
+    try {
+      const { session } = await api(`/api/accounts/${encodeURIComponent(accountId)}/codex/login/${encodeURIComponent(sessionId)}`);
+      handleCodexLoginSession(session);
+      if (session.status === "starting" || session.status === "awaiting_user") {
+        codexLoginPolls.set(accountId, setTimeout(poll, 2000));
+      } else {
+        codexLoginPolls.delete(accountId);
+      }
+    } catch (error) {
+      codexLoginPolls.delete(accountId);
+      toast(error.message || "Codex login status unavailable", "error");
+    }
+  };
+  codexLoginPolls.set(accountId, setTimeout(poll, 2000));
 }
 
 async function loginClaudeAccount(account) {

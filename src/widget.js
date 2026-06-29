@@ -3,6 +3,7 @@ const state = {
   selected: null,
   loading: false,
   updatedAt: null,
+  codexLogins: new Map(),
 };
 
 const els = {
@@ -32,6 +33,7 @@ const els = {
 };
 
 const PRIVACY_KEY = "athena.privacy";
+const codexLoginPolls = new Map();
 let privacyMode = false;
 
 function looksLikeEmail(value) {
@@ -204,8 +206,11 @@ function renderFocus() {
   els.planType.textContent = account.planType || (account.provider === "claude" ? "Claude" : account.provider === "openrouter" ? "OpenRouter" : "Codex");
   els.updatedAt.textContent = state.updatedAt ? formatRelative(state.updatedAt) : "—";
   const isClaude = account.provider === "claude";
+  const needsCodexLogin = canStartCodexLogin(account);
   els.copyLaunch.hidden = isClaude || isOpenRouter;
-  els.copyLaunch.disabled = !isClaude && !isOpenRouter && !account.codexHome;
+  els.copyLaunch.disabled = !needsCodexLogin && !account.codexHome;
+  const copyLabel = els.copyLaunch.querySelector("span");
+  if (copyLabel) copyLabel.textContent = needsCodexLogin ? "Start login" : "Copy launch";
   els.syncClaude.hidden = !isClaude;
   if (isClaude) {
     const loginMode = canStartClaudeLogin(account);
@@ -393,6 +398,10 @@ function canStartClaudeLogin(account) {
   return account.provider === "claude" && ["missing_home", "not_logged_in", "wrong_account", "error"].includes(account.status);
 }
 
+function canStartCodexLogin(account) {
+  return account.provider === "codex" && ["missing_home", "not_logged_in", "wrong_account", "error"].includes(account.status);
+}
+
 function windowLabel(primary) {
   if (!primary.limitWindowSeconds) return "5h window";
   const hours = Math.round(primary.limitWindowSeconds / 3600);
@@ -455,6 +464,80 @@ function mergeUsage(usage, selectedId) {
   render();
 }
 
+async function loginCodexAccount() {
+  const account = state.selected;
+  if (!account || account.provider !== "codex") return;
+  let loginWindow = null;
+  els.copyLaunch.disabled = true;
+  els.copyLaunch.classList.add("is-loading");
+  try {
+    loginWindow = window.open("about:blank", "_blank");
+  } catch {
+    loginWindow = null;
+  }
+  toast("Starting Codex login");
+  try {
+    const { session } = await api(`/api/accounts/${encodeURIComponent(account.id)}/codex/login`, {
+      method: "POST",
+    });
+    handleCodexLoginSession(session, loginWindow);
+    pollCodexLogin(account.id, session.id);
+  } catch (error) {
+    if (loginWindow) loginWindow.close();
+    toast(error.message || "Codex login failed", "error");
+  } finally {
+    els.copyLaunch.disabled = false;
+    els.copyLaunch.classList.remove("is-loading");
+  }
+}
+
+function handleCodexLoginSession(session, loginWindow = null) {
+  if (!session) return;
+  const previous = state.codexLogins.get(session.accountId);
+  const firstCode = Boolean(session.userCode && previous?.userCode !== session.userCode);
+  state.codexLogins.set(session.accountId, session);
+  if (session.loginUrl && loginWindow) {
+    loginWindow.location.href = session.loginUrl;
+  } else if (loginWindow) {
+    loginWindow.close();
+  }
+  if (firstCode) {
+    navigator.clipboard?.writeText(session.userCode).catch(() => {});
+    toast(`Code copied: ${session.userCode}`, "ok");
+  }
+  if (session.status === "complete") {
+    codexLoginPolls.delete(session.accountId);
+    state.codexLogins.delete(session.accountId);
+    if (session.usage) mergeUsage(session.usage, session.accountId);
+    toast("Codex login connected", "ok");
+    return;
+  }
+  if (session.status === "error" || session.status === "expired") {
+    codexLoginPolls.delete(session.accountId);
+    toast(session.error || "Codex login failed", "error");
+  }
+  render();
+}
+
+function pollCodexLogin(accountId, sessionId) {
+  clearTimeout(codexLoginPolls.get(accountId));
+  const poll = async () => {
+    try {
+      const { session } = await api(`/api/accounts/${encodeURIComponent(accountId)}/codex/login/${encodeURIComponent(sessionId)}`);
+      handleCodexLoginSession(session);
+      if (session.status === "starting" || session.status === "awaiting_user") {
+        codexLoginPolls.set(accountId, setTimeout(poll, 2000));
+      } else {
+        codexLoginPolls.delete(accountId);
+      }
+    } catch (error) {
+      codexLoginPolls.delete(accountId);
+      toast(error.message || "Codex login status unavailable", "error");
+    }
+  };
+  codexLoginPolls.set(accountId, setTimeout(poll, 2000));
+}
+
 async function loginClaudeAccount() {
   const account = state.selected;
   if (!account || account.provider !== "claude") return;
@@ -502,6 +585,10 @@ els.refreshUsage.addEventListener("click", refreshUsage);
 els.syncClaude.addEventListener("click", syncClaudeUsage);
 els.copyLaunch.addEventListener("click", () => {
   if (!state.selected?.codexHome) return;
+  if (canStartCodexLogin(state.selected)) {
+    loginCodexAccount();
+    return;
+  }
   const command = `CODEX_HOME=${shellQuote(state.selected.codexHome)} codex`;
   navigator.clipboard.writeText(command).then(
     () => toast("Launch command copied", "ok"),

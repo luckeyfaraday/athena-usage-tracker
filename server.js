@@ -43,6 +43,10 @@ const NO_STORE_HEADERS = {
   pragma: "no-cache",
   expires: "0",
 };
+const CODEX_LOGIN_PROMPT_TIMEOUT_MS = 15_000;
+const CODEX_LOGIN_TIMEOUT_MS = 16 * 60_000;
+const codexHomeLocks = new Map();
+const codexLoginSessions = new Map();
 
 function loadEnvFiles(files) {
   const shellEnv = new Set(Object.keys(process.env));
@@ -310,6 +314,10 @@ async function queryCodexAccount(account) {
     return manualOnly;
   }
   const codexHome = normalizeCodexHome(account.codexHome);
+  return withCodexHomeLock(codexHome, () => queryCodexAccountLocked(account, codexHome));
+}
+
+async function queryCodexAccountLocked(account, codexHome) {
   if (!existsSync(codexHome)) {
     return applyManualOverride({
       ...account,
@@ -396,6 +404,17 @@ async function queryCodexAccount(account) {
         updatedAt: new Date().toISOString(),
       });
     } catch (fallbackError) {
+      if (isCodexLoginInvalidatedError(error) || isCodexLoginInvalidatedError(fallbackError)) {
+        return applyManualOverride({
+          ...account,
+          provider: "codex",
+          codexHome,
+          status: "not_logged_in",
+          error: "Codex session expired or was invalidated. Start login for this account home to reconnect it.",
+          sourceWarning: `${error.message}; fallback failed: ${fallbackError.message}`,
+          loginCommand: codexLoginCommand(codexHome),
+        });
+      }
       return applyManualOverride({
         ...account,
         provider: "codex",
@@ -1387,6 +1406,32 @@ function stripAnsi(value) {
   return String(value || "").replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
+async function withCodexHomeLock(codexHome, task) {
+  const key = normalizeCodexHome(codexHome);
+  const previous = codexHomeLocks.get(key) || Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => {
+    release = resolve;
+  });
+  const queued = previous.catch(() => {}).then(() => current);
+  codexHomeLocks.set(key, queued);
+  await previous.catch(() => {});
+  try {
+    return await task();
+  } finally {
+    release();
+    if (codexHomeLocks.get(key) === queued) {
+      codexHomeLocks.delete(key);
+    }
+  }
+}
+
+function isCodexLoginInvalidatedError(error) {
+  return /token[_ -]?invalidated|authentication token has been invalidated|token refresh failed:\s*401|unauthorized/i.test(
+    error?.message || "",
+  );
+}
+
 function applyManualOverride(account) {
   const until = account.manualUnavailableUntil ? new Date(account.manualUnavailableUntil) : null;
   if (!until || Number.isNaN(until.getTime()) || until.getTime() <= Date.now()) {
@@ -1620,6 +1665,173 @@ function queryAppServer(codexHome) {
   });
 }
 
+async function startCodexLoginAccount(account) {
+  if (account.provider !== "codex") throw new Error("Account is not a Codex account");
+  const codexHome = normalizeCodexHome(account.codexHome);
+  await mkdir(codexHome, { recursive: true, mode: 0o700 });
+  const active = findActiveCodexLoginSession(account.id);
+  if (active) return active;
+
+  const session = spawnCodexLoginSession({ ...account, codexHome });
+  codexLoginSessions.set(session.id, session);
+  await waitForCodexLoginPrompt(session);
+  return session;
+}
+
+function findActiveCodexLoginSession(accountId) {
+  for (const session of codexLoginSessions.values()) {
+    if (session.accountId !== accountId) continue;
+    if (session.status === "starting" || session.status === "awaiting_user") return session;
+  }
+  return null;
+}
+
+function spawnCodexLoginSession(account) {
+  const session = {
+    id: randomUUID(),
+    accountId: account.id,
+    codexHome: account.codexHome,
+    status: "starting",
+    loginUrl: null,
+    userCode: null,
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+    error: null,
+    usage: null,
+    output: "",
+    ready: null,
+    resolveReady: null,
+    child: null,
+    timer: null,
+    cleanupTimer: null,
+  };
+  session.ready = new Promise((resolve) => {
+    session.resolveReady = resolve;
+  });
+
+  const codex = resolveCodexCommand(["login", "--device-auth"]);
+  const child = spawn(codex.command, codex.args, {
+    cwd: __dirname,
+    env: { ...process.env, CODEX_HOME: account.codexHome, TERM: process.env.TERM || "xterm-256color" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  session.child = child;
+
+  session.timer = setTimeout(() => {
+    if (isTerminalCodexLoginStatus(session.status)) return;
+    child.kill("SIGTERM");
+    failCodexLoginSession(session, "Codex login timed out. Start login again to generate a fresh device code.", "expired");
+  }, CODEX_LOGIN_TIMEOUT_MS);
+
+  const consume = (chunk) => {
+    session.output = stripAnsi(`${session.output}${chunk.toString()}`).slice(-4000);
+    updateCodexLoginPrompt(session);
+  };
+
+  child.stdout.on("data", consume);
+  child.stderr.on("data", consume);
+  child.on("error", (error) => {
+    failCodexLoginSession(session, error.message);
+  });
+  child.on("exit", async (code) => {
+    clearTimeout(session.timer);
+    if (isTerminalCodexLoginStatus(session.status)) return;
+    if (code !== 0) {
+      failCodexLoginSession(session, formatCodexLoginFailure(code, session.output));
+      return;
+    }
+    session.status = "complete";
+    session.updatedAt = new Date().toISOString();
+    try {
+      session.usage = await queryCodexAccount({ ...account, codexHome: account.codexHome });
+      invalidateUsageCache(account.id);
+    } catch (error) {
+      session.status = "error";
+      session.error = error.message;
+    }
+    settleCodexLoginSession(session);
+  });
+
+  return session;
+}
+
+function waitForCodexLoginPrompt(session) {
+  if (session.status !== "starting" || session.userCode || session.error) return session;
+  return Promise.race([
+    session.ready,
+    new Promise((resolve) => setTimeout(() => resolve(session), CODEX_LOGIN_PROMPT_TIMEOUT_MS)),
+  ]);
+}
+
+function updateCodexLoginPrompt(session) {
+  const prompt = parseCodexLoginPrompt(session.output);
+  if (prompt.loginUrl) session.loginUrl = prompt.loginUrl;
+  if (prompt.userCode) session.userCode = prompt.userCode;
+  if ((session.loginUrl || session.userCode) && session.status === "starting") {
+    session.status = "awaiting_user";
+    session.updatedAt = new Date().toISOString();
+    settleCodexLoginSession(session, { keep: true });
+  }
+}
+
+function parseCodexLoginPrompt(output) {
+  const text = stripAnsi(output);
+  const url = text.match(/https?:\/\/[^\s)]+/)?.[0]?.replace(/[.,;]+$/, "") || null;
+  const userCode = text.match(/\b([A-Z0-9]{4}-[A-Z0-9]{4,8})\b/)?.[1] || null;
+  return { loginUrl: url, userCode };
+}
+
+function failCodexLoginSession(session, message, status = "error") {
+  if (isTerminalCodexLoginStatus(session.status)) return;
+  clearTimeout(session.timer);
+  session.status = status;
+  session.error = message;
+  session.updatedAt = new Date().toISOString();
+  settleCodexLoginSession(session);
+}
+
+function settleCodexLoginSession(session, { keep = false } = {}) {
+  session.resolveReady?.(session);
+  if (!keep) scheduleCodexLoginSessionCleanup(session);
+}
+
+function scheduleCodexLoginSessionCleanup(session) {
+  clearTimeout(session.cleanupTimer);
+  session.cleanupTimer = setTimeout(() => {
+    codexLoginSessions.delete(session.id);
+  }, 5 * 60_000);
+}
+
+function isTerminalCodexLoginStatus(status) {
+  return status === "complete" || status === "error" || status === "expired";
+}
+
+function publicCodexLoginSession(session) {
+  return {
+    id: session.id,
+    accountId: session.accountId,
+    codexHome: session.codexHome,
+    status: session.status,
+    loginUrl: session.loginUrl,
+    userCode: session.userCode,
+    startedAt: session.startedAt,
+    updatedAt: session.updatedAt,
+    expiresAt: session.expiresAt,
+    error: session.error,
+    ...(session.usage ? { usage: session.usage } : {}),
+  };
+}
+
+function formatCodexLoginFailure(code, output) {
+  const text = stripAnsi(output)
+    .replace(/https?:\/\/\S+/g, "[login URL]")
+    .slice(0, 700)
+    .trim();
+  if (!text) return `Codex login exited with code ${code}`;
+  return `Codex login failed: ${text}`;
+}
+
 function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
@@ -1634,7 +1846,7 @@ function cachedQueryAccount(account, { fresh } = {}) {
   if (!fresh && entry && entry.value && now - entry.storedAt < USAGE_CACHE_TTL_MS) {
     return entry.value;
   }
-  if (!fresh && entry?.inflight) return entry.inflight;
+  if (entry?.inflight) return entry.inflight;
   const inflight = Promise.resolve()
     .then(() => queryAccount(account))
     .then((value) => {
@@ -1699,6 +1911,36 @@ async function handleApi(req, res) {
     await writeAccounts(accounts);
     invalidateUsageCache(id);
     sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname.endsWith("/codex/login")) {
+    const id = decodeURIComponent(url.pathname.split("/").at(-3) || "");
+    const accounts = await readAccounts();
+    const account = accounts.find((item) => item.id === id);
+    if (!account) {
+      sendJson(res, 404, { error: "Account not found" });
+      return;
+    }
+    if (account.provider !== "codex") {
+      sendJson(res, 400, { error: "Account is not a Codex account" });
+      return;
+    }
+    const session = await startCodexLoginAccount(account);
+    sendJson(res, session.status === "error" ? 500 : 202, { session: publicCodexLoginSession(session) });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname.includes("/codex/login/")) {
+    const parts = url.pathname.split("/");
+    const id = decodeURIComponent(parts.at(-4) || "");
+    const sessionId = decodeURIComponent(parts.at(-1) || "");
+    const session = codexLoginSessions.get(sessionId);
+    if (!session || session.accountId !== id) {
+      sendJson(res, 404, { error: "Codex login session not found" });
+      return;
+    }
+    sendJson(res, 200, { session: publicCodexLoginSession(session) });
     return;
   }
 
@@ -1827,9 +2069,13 @@ async function testOpenRouterAccount(account) {
   }
 }
 
-function testCodexAccount(account) {
+async function testCodexAccount(account) {
+  const codexHome = normalizeCodexHome(account.codexHome);
+  return withCodexHomeLock(codexHome, () => runCodexTestAccount(account, codexHome));
+}
+
+function runCodexTestAccount(account, codexHome) {
   return new Promise((resolve) => {
-    const codexHome = normalizeCodexHome(account.codexHome);
     const codex = resolveCodexCommand([
       "exec",
       "--sandbox",
